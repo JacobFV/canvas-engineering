@@ -439,5 +439,85 @@ def test_schema_preserves_transfer_distance(tmp_path):
     assert dist_before == pytest.approx(dist_after, abs=1e-6)
 
 
+# --- Attention fn serialization tests ---
+
+
+def test_schema_roundtrip_connection_fn():
+    """Connection.fn survives JSON round-trip."""
+    layout = CanvasLayout(T=4, H=4, W=4, d_model=64, regions={
+        "a": RegionSpec(bounds=(0, 4, 0, 2, 0, 2), default_attn="linear_attention"),
+        "b": (0, 4, 2, 4, 0, 2),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="a", dst="a"),
+        Connection(src="a", dst="b", fn="gated"),
+        Connection(src="b", dst="a", fn="perceiver"),
+    ])
+    schema = CanvasSchema(layout=layout, topology=topo)
+    d = schema.to_dict()
+
+    # fn=None should be omitted
+    assert "fn" not in d["topology"][0]
+    # fn="gated" should be present
+    assert d["topology"][1]["fn"] == "gated"
+    assert d["topology"][2]["fn"] == "perceiver"
+
+    # Round-trip
+    loaded = CanvasSchema.from_dict(d)
+    assert loaded.topology.connections[0].fn is None
+    assert loaded.topology.connections[1].fn == "gated"
+    assert loaded.topology.connections[2].fn == "perceiver"
+
+
+def test_schema_roundtrip_default_attn():
+    """RegionSpec.default_attn survives JSON round-trip."""
+    layout = CanvasLayout(T=2, H=4, W=4, d_model=32, regions={
+        "a": RegionSpec(bounds=(0, 2, 0, 2, 0, 2), default_attn="mamba"),
+        "b": RegionSpec(bounds=(0, 2, 2, 4, 0, 2)),  # default cross_attention
+        "c": (0, 2, 0, 2, 2, 4),  # raw tuple
+    })
+    schema = CanvasSchema(layout=layout)
+    d = schema.to_dict()
+
+    # default_attn="mamba" serialized
+    assert d["regions"]["a"]["default_attn"] == "mamba"
+    # default_attn="cross_attention" omitted (it's the default)
+    assert "default_attn" not in d["regions"]["b"]
+    # raw tuple has no default_attn
+    assert "default_attn" not in d["regions"]["c"]
+
+    loaded = CanvasSchema.from_dict(d)
+    assert loaded.layout.region_spec("a").default_attn == "mamba"
+    assert loaded.layout.region_spec("b").default_attn == "cross_attention"
+    assert loaded.layout.region_spec("c").default_attn == "cross_attention"
+
+
+def test_schema_roundtrip_json_fn(tmp_path):
+    """Full JSON round-trip with fn and default_attn."""
+    path = tmp_path / "fn_test.json"
+    layout = CanvasLayout(T=4, H=8, W=8, d_model=128, regions={
+        "cam": RegionSpec(bounds=(0, 4, 0, 6, 0, 6)),
+        "thought": RegionSpec(bounds=(0, 2, 6, 8, 0, 4), default_attn="rwkv"),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="cam", dst="cam"),
+        Connection(src="thought", dst="cam", fn="perceiver"),
+        Connection(src="thought", dst="thought"),
+    ])
+    schema = CanvasSchema(layout=layout, topology=topo)
+    schema.to_json(path)
+    loaded = CanvasSchema.from_json(path)
+
+    assert loaded.layout.region_spec("thought").default_attn == "rwkv"
+    assert loaded.topology.connections[1].fn == "perceiver"
+    assert loaded.topology.connections[2].fn is None
+
+    # Resolve: thought self-attn uses region default "rwkv"
+    ops = loaded.topology.attention_ops(loaded.layout)
+    assert ops[0][3] == "cross_attention"  # cam self
+    assert ops[1][3] == "perceiver"        # thought→cam explicit
+    assert ops[2][3] == "rwkv"             # thought self (region default)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -33,6 +33,9 @@ class RegionSpec:
             Should stay constant within a project/ecosystem. Declared explicitly
             so different communities can use different models and so the embedding
             can always be re-derived.
+        default_attn: Default attention function type for outgoing connections
+            from this region. Connections can override this per-edge. See
+            ATTENTION_TYPES for the full registry of supported types.
     """
     bounds: Tuple[int, int, int, int, int, int]
     period: int = 1
@@ -41,6 +44,72 @@ class RegionSpec:
     semantic_type: Optional[str] = None
     semantic_embedding: Optional[Tuple[float, ...]] = None
     embedding_model: str = "openai/text-embedding-3-small"
+    default_attn: str = "cross_attention"
+
+
+# Registry of declared attention function types. The schema declares intent;
+# the executor decides how to run it. Not all backends support all types —
+# a frozen CogVideoX backbone can only honor weight modulation, while a
+# custom dispatcher can route each connection to a different implementation.
+ATTENTION_TYPES = {
+    # --- Dot-product family ---
+    "cross_attention": "Standard scaled dot-product QKV attention (softmax). "
+        "The default. O(N*M) where N=|src|, M=|dst|.",
+    "linear_attention": "Dot-product without softmax normalization. O(N+M) via "
+        "kernel trick (elu+1 or ReLU features). Good for low-dimensional or "
+        "high-frequency regions where full attention is overkill.",
+    "cosine_attention": "Cosine similarity attention — normalized dot-product "
+        "without learned temperature. Stable gradients, no scaling by sqrt(d).",
+    "sigmoid_attention": "Sigmoid instead of softmax over attention logits. "
+        "Each position independently gates each key (no competition). "
+        "Good for multi-label / non-exclusive attention patterns.",
+
+    # --- Gating family ---
+    "gated": "Gated cross-attention (Flamingo-style). A learned sigmoid gate "
+        "on the cross-attention output controls whether to incorporate context. "
+        "Good for optional conditioning (goals, instructions, memory).",
+
+    # --- Compression family ---
+    "perceiver": "Cross-attend through a learned latent bottleneck. Compresses "
+        "dst into a small set of latent vectors, then src attends to those. "
+        "O(N*K) where K << M. Good for very large dst regions.",
+    "pooling": "Mean-pool dst into a single vector, broadcast to all src "
+        "positions. Cheapest possible information transfer. O(M+N). "
+        "Good for scalar or low-dimensional conditioning signals.",
+    "copy": "Direct tensor transfer — no learned parameters, no attention. "
+        "Requires src and dst to have compatible shapes. For broadcast "
+        "regions or direct latent sharing between agents.",
+
+    # --- State-space / recurrence family ---
+    "mamba": "Selective state-space model (S6). Input-dependent gating over "
+        "a compressed state. O(N) sequential, hardware-efficient. "
+        "Good for long temporal sequences.",
+    "rwkv": "Linear attention with learned exponential decay. O(N) via "
+        "recurrent formulation. Time-mixing with position-dependent "
+        "forgetting. Good for causal temporal connections.",
+    "hyena": "Long convolution operator with data-dependent gating. "
+        "O(N log N) via FFT. Sub-quadratic alternative to attention "
+        "for very long sequences.",
+
+    # --- Sparse / structured family ---
+    "sparse_attention": "Top-k attention — only the k highest logits "
+        "survive softmax. Sparse gradient flow. Good for regions that "
+        "should selectively bind to specific positions.",
+    "local_attention": "Windowed attention — each position only attends "
+        "within a local spatial/temporal window. O(N*W) where W is "
+        "window size. Good for spatially local interactions.",
+
+    # --- Meta / experimental ---
+    "none": "Connection exists in schema but is disabled. Useful for "
+        "ablation studies — the edge is declared but produces no "
+        "information flow.",
+    "random_fixed": "Random sparse attention pattern, frozen at init. "
+        "Each position attends to a random fixed subset of dst. "
+        "Baseline for measuring whether learned patterns matter.",
+    "mixture": "Mixture-of-experts style routing. Each src position is "
+        "routed to a subset of dst positions by a learned router. "
+        "Sparse but adaptive. Good for multi-modal hubs.",
+}
 
 
 def transfer_distance(a: RegionSpec, b: RegionSpec) -> float:

@@ -59,12 +59,17 @@ class Connection:
             When int, constrains src to positions at reference_frame + t_src.
         t_dst: Temporal offset for dst (key/value) positions. None = all timesteps.
             When int, constrains dst to positions at reference_frame + t_dst.
+        fn: Attention function type for this connection. None = use the src
+            region's default_attn. See ATTENTION_TYPES in canvas.py for the
+            full registry. The schema declares intent; execution is
+            backend-dependent.
     """
     src: str
     dst: str
     weight: float = 1.0
     t_src: Optional[int] = None
     t_dst: Optional[int] = None
+    fn: Optional[str] = None
 
 
 @dataclass
@@ -161,9 +166,32 @@ class CanvasTopology:
         """Whether any connection has temporal offsets."""
         return any(c.t_src is not None or c.t_dst is not None for c in self.connections)
 
-    def attention_ops(self) -> List[Tuple[str, str, float]]:
-        """List of (src, dst, weight) attention operations to perform per step."""
-        return [(c.src, c.dst, c.weight) for c in self.connections]
+    def resolve_fn(self, connection: Connection,
+                   layout: Optional[CanvasLayout] = None) -> str:
+        """Resolve the attention function type for a connection.
+
+        Resolution order:
+            1. connection.fn if explicitly set
+            2. layout.region_spec(connection.src).default_attn if layout provided
+            3. "cross_attention" (global default)
+        """
+        if connection.fn is not None:
+            return connection.fn
+        if layout is not None:
+            try:
+                return layout.region_spec(connection.src).default_attn
+            except KeyError:
+                pass
+        return "cross_attention"
+
+    def attention_ops(self, layout: Optional[CanvasLayout] = None,
+                      ) -> List[Tuple[str, str, float, str]]:
+        """List of (src, dst, weight, fn) attention operations per step.
+
+        If layout is provided, connection fn is resolved via region defaults.
+        """
+        return [(c.src, c.dst, c.weight, self.resolve_fn(c, layout))
+                for c in self.connections]
 
     def neighbors_of(self, region: str) -> List[str]:
         """Which regions does `region` attend to (as queries)?"""

@@ -9,7 +9,8 @@ Quick start:
 """
 
 from canvas_engineering.canvas import (
-    CanvasLayout, RegionSpec, SpatiotemporalCanvas, transfer_distance,
+    ATTENTION_TYPES, CanvasLayout, RegionSpec, SpatiotemporalCanvas,
+    transfer_distance,
 )
 from canvas_engineering.looped_block import LoopedBlockWrapper
 from canvas_engineering.graft import graft_looped_blocks, freeze_full, freeze_half
@@ -21,6 +22,7 @@ from canvas_engineering.schema import CanvasSchema
 
 __version__ = "0.2.0"
 __all__ = [
+    "ATTENTION_TYPES",
     "CanvasLayout",
     "RegionSpec",
     "SpatiotemporalCanvas",

@@ -50,6 +50,8 @@ class CanvasSchema:
                     rd["semantic_embedding"] = list(r.semantic_embedding)
                 if r.embedding_model != "openai/text-embedding-3-small":
                     rd["embedding_model"] = r.embedding_model
+                if r.default_attn != "cross_attention":
+                    rd["default_attn"] = r.default_attn
                 regions[name] = rd
             else:
                 regions[name] = {"bounds": list(r)}
@@ -76,6 +78,8 @@ class CanvasSchema:
                     cd["t_src"] = c.t_src
                 if c.t_dst is not None:
                     cd["t_dst"] = c.t_dst
+                if c.fn is not None:
+                    cd["fn"] = c.fn
                 conns.append(cd)
             d["topology"] = conns
 
@@ -96,7 +100,7 @@ class CanvasSchema:
             has_spec_fields = any(
                 k in rd for k in ("period", "is_output", "loss_weight",
                                   "semantic_type", "semantic_embedding",
-                                  "embedding_model")
+                                  "embedding_model", "default_attn")
             )
             if has_spec_fields:
                 kwargs = {"bounds": bounds}
@@ -112,6 +116,8 @@ class CanvasSchema:
                     kwargs["semantic_embedding"] = tuple(rd["semantic_embedding"])
                 if "embedding_model" in rd:
                     kwargs["embedding_model"] = rd["embedding_model"]
+                if "default_attn" in rd:
+                    kwargs["default_attn"] = rd["default_attn"]
                 regions[name] = RegionSpec(**kwargs)
             else:
                 regions[name] = bounds
@@ -135,6 +141,7 @@ class CanvasSchema:
                     weight=cd.get("weight", 1.0),
                     t_src=cd.get("t_src", None),
                     t_dst=cd.get("t_dst", None),
+                    fn=cd.get("fn", None),
                 ))
             topology = CanvasTopology(connections=conns)
 

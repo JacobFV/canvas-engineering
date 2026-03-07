@@ -92,7 +92,7 @@ def test_attention_ops():
     ])
     ops = topo.attention_ops()
     assert len(ops) == 2
-    assert ("x", "y", 0.5) in ops
+    assert ("x", "y", 0.5, "cross_attention") in ops
 
 
 def test_summary():
@@ -330,6 +330,153 @@ def test_layout_region_timesteps():
     layout = make_temporal_layout()
     assert layout.region_timesteps("obs") == [0, 1, 2, 3]
     assert layout.region_timesteps("action") == [0, 1, 2, 3]
+
+
+# --- Attention function type tests ---
+
+
+from canvas_engineering import RegionSpec, ATTENTION_TYPES
+
+
+def test_connection_fn_default_none():
+    c = Connection(src="a", dst="b")
+    assert c.fn is None
+
+
+def test_connection_fn_explicit():
+    c = Connection(src="a", dst="b", fn="gated")
+    assert c.fn == "gated"
+
+
+def test_resolve_fn_explicit_overrides_region():
+    """Connection.fn takes priority over region default_attn."""
+    layout = CanvasLayout(T=2, H=4, W=4, d_model=16, regions={
+        "a": RegionSpec(bounds=(0, 2, 0, 2, 0, 2), default_attn="linear_attention"),
+        "b": (0, 2, 2, 4, 0, 2),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="a", dst="b", fn="gated"),
+    ])
+    assert topo.resolve_fn(topo.connections[0], layout) == "gated"
+
+
+def test_resolve_fn_falls_back_to_region_default():
+    """When fn is None, resolve uses src region's default_attn."""
+    layout = CanvasLayout(T=2, H=4, W=4, d_model=16, regions={
+        "a": RegionSpec(bounds=(0, 2, 0, 2, 0, 2), default_attn="mamba"),
+        "b": (0, 2, 2, 4, 0, 2),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="a", dst="b"),
+    ])
+    assert topo.resolve_fn(topo.connections[0], layout) == "mamba"
+
+
+def test_resolve_fn_no_layout_gives_global_default():
+    """Without layout, resolve defaults to cross_attention."""
+    topo = CanvasTopology(connections=[Connection(src="a", dst="b")])
+    assert topo.resolve_fn(topo.connections[0]) == "cross_attention"
+
+
+def test_resolve_fn_tuple_region_gives_global_default():
+    """Raw tuple regions (no RegionSpec) resolve to cross_attention."""
+    layout = CanvasLayout(T=2, H=4, W=4, d_model=16, regions={
+        "a": (0, 2, 0, 2, 0, 2),
+        "b": (0, 2, 2, 4, 0, 2),
+    })
+    topo = CanvasTopology(connections=[Connection(src="a", dst="b")])
+    assert topo.resolve_fn(topo.connections[0], layout) == "cross_attention"
+
+
+def test_attention_ops_includes_fn():
+    """attention_ops returns 4-tuples with resolved fn."""
+    layout = CanvasLayout(T=2, H=4, W=4, d_model=16, regions={
+        "cam": RegionSpec(bounds=(0, 2, 0, 2, 0, 2), default_attn="linear_attention"),
+        "act": RegionSpec(bounds=(0, 2, 2, 4, 0, 2), default_attn="cross_attention"),
+        "goal": (0, 1, 0, 1, 0, 1),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="cam", dst="cam"),           # from region default → linear
+        Connection(src="act", dst="cam"),            # from region default → cross
+        Connection(src="act", dst="goal", fn="gated"),  # explicit → gated
+        Connection(src="goal", dst="goal"),          # tuple region → cross
+    ])
+    ops = topo.attention_ops(layout)
+    assert len(ops) == 4
+    assert ops[0] == ("cam", "cam", 1.0, "linear_attention")
+    assert ops[1] == ("act", "cam", 1.0, "cross_attention")
+    assert ops[2] == ("act", "goal", 1.0, "gated")
+    assert ops[3] == ("goal", "goal", 1.0, "cross_attention")
+
+
+def test_attention_ops_without_layout():
+    """attention_ops without layout resolves everything to cross_attention."""
+    topo = CanvasTopology(connections=[
+        Connection(src="a", dst="b"),
+        Connection(src="a", dst="b", fn="pooling"),
+    ])
+    ops = topo.attention_ops()
+    assert ops[0][3] == "cross_attention"
+    assert ops[1][3] == "pooling"
+
+
+def test_region_spec_default_attn_default():
+    spec = RegionSpec(bounds=(0, 1, 0, 1, 0, 1))
+    assert spec.default_attn == "cross_attention"
+
+
+def test_region_spec_default_attn_custom():
+    spec = RegionSpec(bounds=(0, 1, 0, 1, 0, 1), default_attn="mamba")
+    assert spec.default_attn == "mamba"
+
+
+def test_attention_types_registry():
+    """ATTENTION_TYPES has descriptions for all declared types."""
+    expected = {
+        "cross_attention", "linear_attention", "cosine_attention",
+        "sigmoid_attention", "gated", "perceiver", "pooling", "copy",
+        "mamba", "rwkv", "hyena", "sparse_attention", "local_attention",
+        "none", "random_fixed", "mixture",
+    }
+    assert set(ATTENTION_TYPES.keys()) == expected
+    for name, desc in ATTENTION_TYPES.items():
+        assert isinstance(desc, str) and len(desc) > 10, f"{name} has no description"
+
+
+def test_mixed_fn_topology():
+    """A realistic topology mixing multiple attention function types."""
+    layout = CanvasLayout(T=4, H=8, W=8, d_model=256, regions={
+        "visual": RegionSpec(bounds=(0, 4, 0, 6, 0, 6), default_attn="cross_attention"),
+        "proprio": RegionSpec(bounds=(0, 4, 6, 7, 0, 2), default_attn="linear_attention"),
+        "thought": RegionSpec(bounds=(0, 2, 7, 8, 0, 4), default_attn="mamba"),
+        "goal": RegionSpec(bounds=(0, 1, 7, 8, 4, 8), default_attn="cross_attention",
+                           is_output=False),
+    })
+    topo = CanvasTopology(connections=[
+        # Self-attention per region (uses region defaults)
+        Connection(src="visual", dst="visual"),
+        Connection(src="proprio", dst="proprio"),
+        Connection(src="thought", dst="thought"),
+        Connection(src="goal", dst="goal"),
+        # Cross-region with explicit overrides
+        Connection(src="visual", dst="goal", fn="gated"),       # optional conditioning
+        Connection(src="thought", dst="visual", fn="perceiver"),  # compress visual
+        Connection(src="proprio", dst="visual", fn="pooling"),   # cheap summary
+        # Multi-agent broadcast
+        Connection(src="thought", dst="thought", fn="copy", t_src=0, t_dst=-1),
+    ])
+    ops = topo.attention_ops(layout)
+    fns = [op[3] for op in ops]
+    assert fns == [
+        "cross_attention",   # visual self (region default)
+        "linear_attention",  # proprio self (region default)
+        "mamba",             # thought self (region default)
+        "cross_attention",   # goal self (region default)
+        "gated",             # visual ← goal (explicit)
+        "perceiver",         # thought ← visual (explicit)
+        "pooling",           # proprio ← visual (explicit)
+        "copy",              # thought ← thought t-1 (explicit)
+    ]
 
 
 if __name__ == "__main__":

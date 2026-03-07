@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-80%2F80-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-95%2F95-brightgreen.svg)]()
 
 > Prompt engineering structures what an LLM *sees*. **Canvas engineering** structures what a diffusion model *thinks in*. You declare which regions of latent space carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
 
@@ -280,6 +280,113 @@ Connection(src="thought", dst="thought", t_src=None, t_dst=None)
 
 The `causal_temporal` constructor gives you same-frame self-attention + previous-frame cross-attention for all regions — no future leakage, but full temporal context.
 
+## Attention function types
+
+Not all connections should use the same attention mechanism. A `Connection` can declare its `fn` — the type of function used for that edge. Regions can also set `default_attn` — a default for all outgoing connections. The schema declares *intent*; execution is backend-dependent.
+
+```python
+from canvas_engineering import CanvasLayout, RegionSpec, Connection, CanvasTopology
+
+layout = CanvasLayout(
+    T=8, H=16, W=16, d_model=512,
+    regions={
+        # Region defaults: what kind of attention makes sense for this modality?
+        "visual":  RegionSpec(bounds=(0,8, 0,12, 0,12), default_attn="cross_attention"),
+        "proprio": RegionSpec(bounds=(0,8, 12,13, 0,2), default_attn="linear_attention"),
+        "thought": RegionSpec(bounds=(0,4, 13,15, 0,4), default_attn="mamba"),
+        "goal":    RegionSpec(bounds=(0,1, 15,16, 0,4), default_attn="cross_attention",
+                              is_output=False),
+    },
+)
+
+topology = CanvasTopology(connections=[
+    # Self-attention (uses each region's default_attn)
+    Connection(src="visual",  dst="visual"),           # → cross_attention
+    Connection(src="proprio", dst="proprio"),           # → linear_attention
+    Connection(src="thought", dst="thought"),           # → mamba
+    Connection(src="goal",    dst="goal"),              # → cross_attention
+
+    # Cross-region with explicit fn overrides
+    Connection(src="visual",  dst="goal", fn="gated"),       # optional conditioning
+    Connection(src="thought", dst="visual", fn="perceiver"), # compress 864 visual tokens
+    Connection(src="proprio", dst="visual", fn="pooling"),   # just need a summary
+    Connection(src="thought", dst="thought", fn="copy",      # direct latent relay
+               t_src=0, t_dst=-1),                           # from previous frame
+])
+
+# Resolve: returns (src, dst, weight, fn) with defaults applied
+ops = topology.attention_ops(layout)
+# [("visual", "visual", 1.0, "cross_attention"),
+#  ("proprio", "proprio", 1.0, "linear_attention"),
+#  ("thought", "thought", 1.0, "mamba"),
+#  ...]
+```
+
+**Resolution order:** `connection.fn` (if set) → `region.default_attn` (if layout provided) → `"cross_attention"` (global default). Fully backward compatible — existing code without `fn` or `default_attn` resolves to standard cross-attention.
+
+### The lineup
+
+Every connection function type represents a different theory of how information should flow between regions. The schema declares intent; the executor decides implementation.
+
+| Type | Family | Complexity | Best for |
+|------|--------|-----------|----------|
+| `cross_attention` | Dot-product | O(NM) | General-purpose, content-based selection |
+| `linear_attention` | Dot-product | O(N+M) | Low-dimensional or high-frequency streams |
+| `cosine_attention` | Dot-product | O(NM) | Stable gradients, no temperature scaling |
+| `sigmoid_attention` | Dot-product | O(NM) | Non-exclusive / multi-label attention |
+| `gated` | Gating | O(NM) | Optional conditioning (goals, instructions) |
+| `perceiver` | Compression | O(NK) | Large dst regions compressed through bottleneck |
+| `pooling` | Compression | O(N+M) | Scalar/low-dim conditioning signals |
+| `copy` | Transfer | O(N) | Direct latent sharing, broadcast regions |
+| `mamba` | State-space | O(N) | Long temporal sequences, causal connections |
+| `rwkv` | State-space | O(N) | Temporal connections with learned decay |
+| `hyena` | Convolution | O(N log N) | Sub-quadratic long-range via FFT |
+| `sparse_attention` | Sparse | O(NK) | Selective binding to specific positions |
+| `local_attention` | Sparse | O(NW) | Spatially local interactions (neighboring patches) |
+| `none` | Meta | O(0) | Ablation — edge declared but disabled |
+| `random_fixed` | Meta | O(NK) | Baseline — does learned structure matter? |
+| `mixture` | Meta | O(NK) | MoE-style routing for multi-modal hubs |
+
+### Design recipes
+
+**Robot manipulation** — vision-heavy, low-latency actions:
+```python
+"visual":  default_attn="cross_attention"    # full attention for spatial reasoning
+"proprio": default_attn="linear_attention"   # 12D joint state, no need for O(N²)
+"action":  default_attn="cross_attention"    # content-based selection from visual
+# visual → action: cross_attention (which visual patches matter for this action?)
+# proprio → action: pooling (just need the joint state vector)
+```
+
+**Embodied agent with memory** — long-horizon, selective recall:
+```python
+"perception": default_attn="cross_attention"
+"memory":     default_attn="mamba"            # O(N) sequential over long history
+"policy":     default_attn="cross_attention"
+# memory → perception: gated (decide whether to incorporate memory at all)
+# perception → memory: perceiver (compress percepts into fixed-size memory)
+```
+
+**Multi-agent coordination** — shared latent space:
+```python
+"agent_a.thought": default_attn="rwkv"       # causal temporal within agent
+"agent_b.thought": default_attn="rwkv"
+"shared_task":     default_attn="cross_attention"
+# agent_a.thought → shared_task: cross_attention (selective broadcast)
+# shared_task → agent_b.thought: gated (selective incorporation)
+# agent_a.thought → agent_b.thought: copy (direct latent relay)
+```
+
+**Vision transformer backbone** — drop-in structured attention:
+```python
+"cls_token":  default_attn="cross_attention"
+"patches":    default_attn="local_attention"   # each patch attends locally
+"readout":    default_attn="cross_attention"
+# cls_token → patches: cross_attention (global aggregation)
+# patches → patches: local_attention (spatial locality)
+# readout → cls_token: pooling (single vector summary)
+```
+
 ## Semantic types and transfer distance
 
 Each canvas region represents a modality — RGB video, joint angles, reward, language. `RegionSpec` lets you declare the modality's **semantic type** as a human-readable string and a frozen embedding vector from a fixed model. This turns modality compatibility from a human judgment call into a computable quantity.
@@ -370,8 +477,9 @@ The schema file is human-readable JSON. It declares everything needed to interpr
 | `CanvasLayout` | Declarative 3D canvas geometry with named regions |
 | `RegionSpec` | Per-region semantics: frequency, loss weight, output participation |
 | `SpatiotemporalCanvas` | Canvas tensor ops: `create_empty`, `place`, `extract` |
-| `Connection` | Single block-to-block attention op with optional temporal offsets |
-| `CanvasTopology` | Declarative DAG of attention ops (spatial + temporal compute graph) |
+| `Connection` | Single attention op with temporal offsets and function type (`fn`) |
+| `CanvasTopology` | Declarative DAG of attention ops with `resolve_fn()` dispatch |
+| `ATTENTION_TYPES` | Registry of 16 declared attention function types |
 | `transfer_distance()` | Cosine distance between semantic type embeddings |
 | `CanvasSchema` | Portable bundle: layout + topology + metadata, JSON-serializable |
 | `ActionHead` | MLP decoder: latent channels → robot actions |
