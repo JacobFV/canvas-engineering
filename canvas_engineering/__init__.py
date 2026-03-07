@@ -6,6 +6,7 @@ Graft looped attention for weight-sharing regularization.
 Quick start:
     from canvas_engineering import CanvasLayout, RegionSpec, CanvasSchema
     from canvas_engineering import graft_looped_blocks, CurriculumScheduler
+    from canvas_engineering import Field, compile_schema
 """
 
 from canvas_engineering.canvas import (
@@ -19,6 +20,10 @@ from canvas_engineering.action_heads import ActionHead
 from canvas_engineering.sharpening import SharpeningSchedule
 from canvas_engineering.connectivity import Connection, CanvasTopology
 from canvas_engineering.schema import CanvasSchema
+from canvas_engineering.types import (
+    Field, LayoutStrategy, ConnectivityPolicy,
+    BoundField, BoundSchema, compile_schema,
+)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -37,4 +42,10 @@ __all__ = [
     "SharpeningSchedule",
     "Connection",
     "CanvasTopology",
+    "Field",
+    "LayoutStrategy",
+    "ConnectivityPolicy",
+    "BoundField",
+    "BoundSchema",
+    "compile_schema",
 ]
