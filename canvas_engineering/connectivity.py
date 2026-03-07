@@ -273,6 +273,22 @@ class CanvasTopology:
 
         return mask
 
+    def to_additive_mask(self, layout: CanvasLayout, device: str = "cpu") -> torch.Tensor:
+        """Generate (N, N) additive attention mask for use with nn.Transformer.
+
+        Returns a float mask where 0.0 = attend and -inf = block.
+        Unused positions (not in any region) get self-attention to avoid
+        NaN in softmax. Use with: transformer(x, mask=topology.to_additive_mask(layout))
+        """
+        raw = self.to_attention_mask(layout, device=device)
+        additive = torch.full_like(raw, float('-inf'))
+        additive[raw > 0] = 0.0
+        # Unused positions: self-attend to avoid NaN
+        for i in range(layout.num_positions):
+            if additive[i].eq(float('-inf')).all():
+                additive[i, i] = 0.0
+        return additive
+
     def to_block_adjacency(self) -> Dict[Tuple[str, str], float]:
         """Region-level adjacency dict: (src, dst) → weight."""
         adj: Dict[Tuple[str, str], float] = {}

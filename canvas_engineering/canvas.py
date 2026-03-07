@@ -309,6 +309,11 @@ class SpatiotemporalCanvas(nn.Module):
         action_embs = canvas_mod.extract(canvas, "action")
     """
 
+    @staticmethod
+    def _sanitize_key(name: str) -> str:
+        """Sanitize region name for use as a PyTorch ParameterDict key."""
+        return name.replace(".", "__").replace("[", "_").replace("]", "_")
+
     def __init__(self, layout: CanvasLayout):
         super().__init__()
         self.layout = layout
@@ -316,8 +321,11 @@ class SpatiotemporalCanvas(nn.Module):
             layout.d_model, max_T=layout.T, max_H=layout.H, max_W=layout.W
         )
         self.empty_token = nn.Parameter(torch.randn(layout.d_model) * 0.02)
+        # Map region_name -> sanitized key for ParameterDict compatibility
+        self._key_map = {name: self._sanitize_key(name) for name in layout.regions}
         self.modality_embeddings = nn.ParameterDict(
-            {name: nn.Parameter(torch.randn(layout.d_model) * 0.02) for name in layout.regions}
+            {self._key_map[name]: nn.Parameter(torch.randn(layout.d_model) * 0.02)
+             for name in layout.regions}
         )
 
     def create_empty(self, batch_size: int) -> torch.Tensor:
@@ -337,7 +345,8 @@ class SpatiotemporalCanvas(nn.Module):
             pad = torch.zeros(embeddings.shape[0], n - embeddings.shape[1], self.layout.d_model, device=embeddings.device)
             embeddings = torch.cat([embeddings, pad], dim=1)
         idx = torch.tensor(indices, device=canvas.device, dtype=torch.long)
-        mod_emb = self.modality_embeddings[region_name] if region_name in self.modality_embeddings else 0
+        key = self._key_map.get(region_name, self._sanitize_key(region_name))
+        mod_emb = self.modality_embeddings[key] if key in self.modality_embeddings else 0
         canvas = canvas.clone()
         canvas[:, idx] = embeddings + mod_emb
         return canvas

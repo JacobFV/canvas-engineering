@@ -479,5 +479,37 @@ def test_mixed_fn_topology():
     ]
 
 
+def test_additive_mask_no_nan():
+    """to_additive_mask: unused positions get self-attention, no all-inf rows."""
+    # Layout with unused positions: 2*4*4=32 positions, regions use 8+8=16
+    layout = make_layout()
+    topo = CanvasTopology.isolated(["a", "b"])
+    mask = topo.to_additive_mask(layout)
+
+    # No row should be all -inf (would cause NaN in softmax)
+    for i in range(layout.num_positions):
+        assert not mask[i].eq(float('-inf')).all(), f"row {i} is all -inf"
+
+    # Region positions should attend within their region
+    a_idx = layout.region_indices("a")
+    assert mask[a_idx[0], a_idx[1]].item() == 0.0  # can attend
+
+    # Cross-region should be blocked (isolated topology)
+    b_idx = layout.region_indices("b")
+    assert mask[a_idx[0], b_idx[0]].item() == float('-inf')
+
+
+def test_additive_mask_dense():
+    """to_additive_mask with dense topology: all region positions attend."""
+    layout = make_layout()
+    topo = CanvasTopology.dense(["a", "b"])
+    mask = topo.to_additive_mask(layout)
+
+    a_idx = layout.region_indices("a")
+    b_idx = layout.region_indices("b")
+    # Cross-region should be allowed
+    assert mask[a_idx[0], b_idx[0]].item() == 0.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
