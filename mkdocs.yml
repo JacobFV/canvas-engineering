@@ -1,0 +1,83 @@
+site_name: canvas-engineering
+site_description: "Prompt engineering, but for latent space. A type system for multimodal latent dynamics."
+site_url: https://jacobfv.github.io/canvas-engineering/
+repo_url: https://github.com/JacobFV/canvas-engineering
+repo_name: JacobFV/canvas-engineering
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_source: false
+            show_root_heading: true
+            heading_level: 3
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - Concepts:
+    - The Canvas: concepts/canvas.md
+    - Topology: concepts/topology.md
+    - Attention Functions: concepts/attention-functions.md
+    - Semantic Types: concepts/semantic-types.md
+    - Looped Attention: concepts/looped-attention.md
+  - Design Recipes:
+    - Robot Manipulation: recipes/robot.md
+    - Computer Use Agent: recipes/computer-use.md
+    - Multi-Agent: recipes/multi-agent.md
+    - Custom Architectures: recipes/custom.md
+  - API Reference:
+    - canvas: api/canvas.md
+    - connectivity: api/connectivity.md
+    - schema: api/schema.md
+    - looped_block: api/looped_block.md
+    - graft: api/graft.md
+  - Research:
+    - Empirical Results: research/results.md
+    - The Type System Thesis: research/type-system.md
