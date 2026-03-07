@@ -20,7 +20,7 @@ from canvas_engineering.sharpening import SharpeningSchedule
 from canvas_engineering.connectivity import Connection, CanvasTopology
 from canvas_engineering.schema import CanvasSchema
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",

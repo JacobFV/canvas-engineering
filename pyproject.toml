@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "canvas-engineering"
-version = "0.2.0"
+version = "0.1.0"
 description = "Prompt engineering, but for latent space. A type system for multimodal latent dynamics in video diffusion transformers."
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,6 +32,7 @@ dev = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://github.com/JacobFV/canvas-engineering"
+Documentation = "https://jacobfv.github.io/canvas-engineering/"
 
 [tool.setuptools.packages.find]
 include = ["canvas_engineering*"]

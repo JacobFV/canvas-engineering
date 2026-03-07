@@ -2,14 +2,16 @@
 
 ### Prompt engineering, but for latent space.
 
+[![PyPI](https://img.shields.io/pypi/v/canvas-engineering.svg)](https://pypi.org/project/canvas-engineering/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-95%2F95-brightgreen.svg)]()
+[![Docs](https://img.shields.io/badge/docs-jacobfv.github.io-blue.svg)](https://jacobfv.github.io/canvas-engineering/)
 
 > Prompt engineering structures what an LLM *sees*. **Canvas engineering** structures what a diffusion model *thinks in*. You declare which regions of latent space carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
 
 <p align="center">
-  <img src="assets/canvas_layouts_combined.png" alt="Canvas allocation layouts for three applications" width="100%">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/canvas_layouts_combined.png" alt="Canvas allocation layouts for three applications" width="100%">
 </p>
 <p align="center"><i>Canvas allocations for robot manipulation, computer use, and multi-robot control. Each colored block is a modality region on the 3D spatiotemporal grid.</i></p>
 
@@ -26,7 +28,7 @@ Prompt engineering gives LLMs structured context — few-shot examples, system i
 This is literally a type system. `region_indices()` is an offset calculation. `loss_weight_mask()` is type-directed codegen. The topology is a calling convention. Two agents with the same canvas schema can share latent state directly — no tokenization, no encoding — because the schema tells you what every position means.
 
 <!-- Source: scripts/generate_diagrams.py :: generate_type_system() -->
-<p align="center"><img src="assets/canvas_type_system.png" alt="Type system analogy: C struct layout vs canvas schema" width="80%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/canvas_type_system.png" alt="Type system analogy: C struct layout vs canvas schema" width="80%"></p>
 
 The library has two orthogonal pieces, validated over [26 experiments and 236 training runs](https://github.com/JacobFV/recursive-omnimodal-video-action-model):
 
@@ -82,7 +84,7 @@ That's it. The frozen 1.69B-parameter backbone now loops its computation 3 times
 ## How looped attention works
 
 <!-- Source: scripts/generate_diagrams.py :: generate_looped_attention() -->
-<p align="center"><img src="assets/looped_attention.png" alt="Looped attention block diagram" width="75%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/looped_attention.png" alt="Looped attention block diagram" width="75%"></p>
 
 **Zero-init safety**: Loop embeddings start at zero. At initialization, the model behaves identically to the pretrained backbone. No distribution shift. Safe to graft onto any frozen model.
 
@@ -113,7 +115,7 @@ actions = canvas.extract(batch, "action")          # read action predictions
 ```
 
 <!-- Source: scripts/generate_diagrams.py :: generate_3d_gif() / generate_3d_static() -->
-<p align="center"><img src="assets/canvas_robot_3d.gif" alt="3D rotating canvas allocation" width="50%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/canvas_robot_3d.gif" alt="3D rotating canvas allocation" width="50%"></p>
 <p align="center"><i>3D region allocation for a robot manipulation canvas. Each colored block is a modality occupying a subvolume of the (T, H, W) grid.</i></p>
 
 **Built-in examples** for robot manipulation, computer use agents, and multi-robot control:
@@ -132,7 +134,7 @@ layout = CanvasLayout(
 # → 16,384 total positions, bandwidth-proportional allocation
 ```
 
-<p align="center"><img src="assets/canvas_computer.png" alt="Computer use agent canvas" width="45%"> <img src="assets/canvas_multi_robot.png" alt="Multi-robot canvas" width="45%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/canvas_computer.png" alt="Computer use agent canvas" width="45%"> <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/canvas_multi_robot.png" alt="Multi-robot canvas" width="45%"></p>
 
 ## Why 3 loops?
 
@@ -247,7 +249,7 @@ CanvasTopology.causal_temporal(["obs", "act"]) # same-frame self + prev-frame cr
 ```
 
 <!-- Source: scripts/generate_topology_diagrams.py :: generate_all() -->
-<p align="center"><img src="assets/topology_constructors.png" alt="Topology convenience constructors" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/topology_constructors.png" alt="Topology convenience constructors" width="100%"></p>
 
 The topology is the compute graph of attention operations — not a soft mask on dense attention. Block self-attention is one special case. Dense is another. The interesting cases are structured DAGs that mirror the causal/information-flow structure of your problem.
 
@@ -418,7 +420,7 @@ transfer_distance(cam, joints)   # ~0.65 — expensive (full MLP adapter)
 ```
 
 <!-- Source: scripts/generate_semantic_diagrams.py :: generate_transfer_distance() -->
-<p align="center"><img src="assets/transfer_distance.png" alt="Semantic embedding space with transfer distances" width="65%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/transfer_distance.png" alt="Semantic embedding space with transfer distances" width="65%"></p>
 
 **Why this matters:** If canvas schemas produce stable latent representations (an empirical hypothesis we're testing), then semantic embedding distance approximates the real cost of bridging two modalities — how many adapter layers, how much data. The embedding model must be fixed and declared so distances are comparable across time and projects.
 
@@ -466,7 +468,7 @@ pairs = schema.compatible_regions(other_schema, threshold=0.3)
 The schema file is human-readable JSON. It declares everything needed to interpret a canvas tensor: geometry, region semantics, connectivity, and modality types. Two models with the same schema can share latent state directly.
 
 <!-- Source: scripts/generate_semantic_diagrams.py :: generate_schema_alignment() -->
-<p align="center"><img src="assets/schema_alignment.png" alt="Cross-schema region alignment between robot and computer agents" width="90%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/schema_alignment.png" alt="Cross-schema region alignment between robot and computer agents" width="90%"></p>
 <p align="center"><i>Two agents with different canvas schemas. <code>compatible_regions()</code> finds semantically aligned region pairs — solid lines indicate direct latent transfer is possible, dashed lines require adapter layers.</i></p>
 
 ## API reference
