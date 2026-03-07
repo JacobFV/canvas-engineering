@@ -3,14 +3,11 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "canvas-engine"
-version = "0.1.0"
-description = "Context engineering for diffusion models. Graft looped attention onto any video diffusion transformer."
+name = "canvas-engineering"
+version = "0.2.0"
+description = "Prompt engineering, but for latent space. A type system for multimodal latent dynamics in video diffusion transformers."
 readme = "README.md"
 license = "Apache-2.0"
-
-[tool.setuptools.packages.find]
-include = ["canvas_engine*"]
 requires-python = ">=3.9"
 authors = [
     {name = "Jacob"},
@@ -20,7 +17,6 @@ keywords = ["diffusion", "transformer", "looped-attention", "video", "robotics",
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -35,4 +31,10 @@ data = ["av", "numpy", "Pillow"]
 dev = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/jacobmarks/canvas-engine"
+Homepage = "https://github.com/JacobFV/canvas-engineering"
+
+[tool.setuptools.packages.find]
+include = ["canvas_engineering*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

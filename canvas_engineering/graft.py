@@ -10,8 +10,8 @@ from typing import List, Optional, Tuple, Type
 import torch
 import torch.nn as nn
 
-from canvas_engine.looped_block import LoopedBlockWrapper
-from canvas_engine.action_heads import ActionHead
+from canvas_engineering.looped_block import LoopedBlockWrapper
+from canvas_engineering.action_heads import ActionHead
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def graft_looped_blocks(
     if wrapper_class is None:
         block_type = type(blocks[0]).__name__
         if "CogVideoX" in block_type:
-            from canvas_engine.cogvideox import LoopedCogVideoXBlock, detect_inner_dim
+            from canvas_engineering.cogvideox import LoopedCogVideoXBlock, detect_inner_dim
             wrapper_class = LoopedCogVideoXBlock
             if inner_dim is None:
                 inner_dim = detect_inner_dim(transformer)

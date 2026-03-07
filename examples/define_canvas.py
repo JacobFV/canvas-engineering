@@ -1,6 +1,6 @@
 """Canvas layout examples for different applications."""
 
-from canvas_engine import CanvasLayout, SpatiotemporalCanvas
+from canvas_engineering import CanvasLayout, SpatiotemporalCanvas
 import torch
 
 # ─── Robot Manipulation (Bridge V2) ──────────────────────────────────────────

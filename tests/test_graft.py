@@ -2,8 +2,8 @@
 import torch
 import torch.nn as nn
 import pytest
-from canvas_engine.looped_block import LoopedBlockWrapper
-from canvas_engine.graft import freeze_full, freeze_half
+from canvas_engineering.looped_block import LoopedBlockWrapper
+from canvas_engineering.graft import freeze_full, freeze_half
 
 
 class FakeTransformer(nn.Module):

@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-from canvas_engine.canvas import CanvasLayout, RegionSpec, transfer_distance
-from canvas_engine.connectivity import Connection, CanvasTopology
+from canvas_engineering.canvas import CanvasLayout, RegionSpec, transfer_distance
+from canvas_engineering.connectivity import Connection, CanvasTopology
 
 
 @dataclass

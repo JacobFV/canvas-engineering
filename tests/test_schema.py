@@ -5,7 +5,7 @@ import torch
 import pytest
 from pathlib import Path
 
-from canvas_engine import (
+from canvas_engineering import (
     CanvasLayout, RegionSpec, CanvasSchema,
     Connection, CanvasTopology, transfer_distance,
 )

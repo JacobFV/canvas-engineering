@@ -1,7 +1,7 @@
 """Tests for declarative canvas topology, including temporal connections."""
 import torch
 import pytest
-from canvas_engine import CanvasLayout, Connection, CanvasTopology
+from canvas_engineering import CanvasLayout, Connection, CanvasTopology
 
 
 def make_layout():

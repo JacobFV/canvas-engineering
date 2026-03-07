@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import pytest
-from canvas_engine.looped_block import LoopedBlockWrapper
+from canvas_engineering.looped_block import LoopedBlockWrapper
 
 
 class DummyBlock(nn.Module):

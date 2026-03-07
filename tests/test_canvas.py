@@ -1,7 +1,7 @@
 """Tests for canvas layout and spatiotemporal canvas."""
 import torch
 import pytest
-from canvas_engine import CanvasLayout, RegionSpec, SpatiotemporalCanvas
+from canvas_engineering import CanvasLayout, RegionSpec, SpatiotemporalCanvas
 
 
 def test_layout_basic():

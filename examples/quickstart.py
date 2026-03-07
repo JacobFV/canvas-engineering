@@ -9,7 +9,7 @@ Requirements: pip install canvas-engine[cogvideox]
 """
 
 import torch
-from canvas_engine import CanvasLayout, graft_looped_blocks, CurriculumScheduler
+from canvas_engineering import CanvasLayout, graft_looped_blocks, CurriculumScheduler
 
 # 1. Define canvas layout (Bridge V2 robot video)
 layout = CanvasLayout(

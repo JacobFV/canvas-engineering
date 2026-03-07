@@ -1,4 +1,4 @@
-# canvas-engine
+# canvas-engineering
 
 ### Prompt engineering, but for latent space.
 
@@ -17,13 +17,16 @@
 
 ## The idea
 
-Prompt engineering gives LLMs structured context — few-shot examples, system instructions, tool descriptions — so they produce better outputs. Canvas engineering does the same thing one level deeper: it gives diffusion models structured *latent space* so they learn better representations. A diffusion transformer's latent tensor is just a flat bag of positions. **canvas-engine** turns it into a typed workspace by letting you declare:
+Prompt engineering gives LLMs structured context — few-shot examples, system instructions, tool descriptions — so they produce better outputs. Canvas engineering does the same thing one level deeper: it gives diffusion models structured *latent space* so they learn better representations. A diffusion transformer's latent tensor is just a flat bag of positions. **canvas-engineering** turns it into a typed workspace by letting you declare:
 
 - **What** each region means — `RegionSpec` with bounds, temporal frequency, loss weight, input/output role
 - **How** regions interact — `CanvasTopology` as a directed graph of attention operations with temporal constraints
 - **How fast** each region runs — `period` maps canvas timesteps to real-world frames, so a "thought" region at period=4 and a "perception" region at period=1 coexist on the same canvas
 
 This is literally a type system. `region_indices()` is an offset calculation. `loss_weight_mask()` is type-directed codegen. The topology is a calling convention. Two agents with the same canvas schema can share latent state directly — no tokenization, no encoding — because the schema tells you what every position means.
+
+<!-- Source: scripts/generate_diagrams.py :: generate_type_system() -->
+<p align="center"><img src="assets/canvas_type_system.png" alt="Type system analogy: C struct layout vs canvas schema" width="80%"></p>
 
 The library has two orthogonal pieces, validated over [26 experiments and 236 training runs](https://github.com/JacobFV/recursive-omnimodal-video-action-model):
 
@@ -40,13 +43,13 @@ What looping is *not*: iterative reasoning. Three independent experiments falsif
 ## Quick start
 
 ```bash
-pip install canvas-engine
+pip install canvas-engineering
 ```
 
 ### Graft looped attention onto CogVideoX-2B
 
 ```python
-from canvas_engine import graft_looped_blocks, CurriculumScheduler
+from canvas_engineering import graft_looped_blocks, CurriculumScheduler
 from diffusers import CogVideoXTransformer3DModel
 import torch
 
@@ -78,19 +81,8 @@ That's it. The frozen 1.69B-parameter backbone now loops its computation 3 times
 
 ## How looped attention works
 
-```
-                    ┌─────────────────────────────────┐
-                    │                                 │
-                    │   ┌─────────────────────────┐   │
-    h ──────────────┤──▶│   Frozen DiT Block      │───┤──▶ h'
-         + e_loop   │   │   (1.69B params)        │   │
-                    │   └─────────────────────────┘   │
-                    │        × 3 iterations            │
-                    │        + learned gate            │
-                    └─────────────────────────────────┘
-                         350K trainable params
-                         (loop_emb + loop_gate)
-```
+<!-- Source: scripts/generate_diagrams.py :: generate_looped_attention() -->
+<p align="center"><img src="assets/looped_attention.png" alt="Looped attention block diagram" width="75%"></p>
 
 **Zero-init safety**: Loop embeddings start at zero. At initialization, the model behaves identically to the pretrained backbone. No distribution shift. Safe to graft onto any frozen model.
 
@@ -101,7 +93,7 @@ That's it. The frozen 1.69B-parameter backbone now loops its computation 3 times
 A **canvas** is a 3D grid `(T, H, W)` where different regions handle different modalities. This is the omnimodal I/O layer — it's what lets a video model also predict actions, read proprioception, and estimate reward.
 
 ```python
-from canvas_engine import CanvasLayout, SpatiotemporalCanvas
+from canvas_engineering import CanvasLayout, SpatiotemporalCanvas
 
 # Robot manipulation canvas
 layout = CanvasLayout(
@@ -120,7 +112,9 @@ batch = canvas.place(batch, visual_embs, "visual") # write video patches
 actions = canvas.extract(batch, "action")          # read action predictions
 ```
 
-<p align="center"><img src="assets/canvas_robot.png" alt="Robot manipulation canvas" width="45%"></p>
+<!-- Source: scripts/generate_diagrams.py :: generate_3d_gif() / generate_3d_static() -->
+<p align="center"><img src="assets/canvas_robot_3d.gif" alt="3D rotating canvas allocation" width="50%"></p>
+<p align="center"><i>3D region allocation for a robot manipulation canvas. Each colored block is a modality occupying a subvolume of the (T, H, W) grid.</i></p>
 
 **Built-in examples** for robot manipulation, computer use agents, and multi-robot control:
 
@@ -163,7 +157,7 @@ Freeze level doesn't affect action loss at all (marginals: 0.109 vs 0.108, p=0.7
 Canvas regions can operate at different real-world frequencies. A `RegionSpec` declares per-region semantics — temporal frequency, loss participation, and loss weight — as first-class properties.
 
 ```python
-from canvas_engine import CanvasLayout, RegionSpec
+from canvas_engineering import CanvasLayout, RegionSpec
 
 layout = CanvasLayout(
     T=16, H=32, W=32, d_model=768,
@@ -211,7 +205,7 @@ Raw tuples auto-wrap as `RegionSpec(bounds=tuple)` with defaults — full backwa
 Canvas regions don't have to interact via Euclidean adjacency. A `CanvasTopology` declaratively specifies which **block-to-block attention operations** are performed per step. Each `Connection` is a discrete cross-attention op: `src` tokens query against `dst` keys/values.
 
 ```python
-from canvas_engine import Connection, CanvasTopology
+from canvas_engineering import Connection, CanvasTopology
 
 # Declarative: define the full attention compute DAG as data
 topology = CanvasTopology(connections=[
@@ -288,7 +282,7 @@ The `causal_temporal` constructor gives you same-frame self-attention + previous
 Each canvas region represents a modality — RGB video, joint angles, reward, language. `RegionSpec` lets you declare the modality's **semantic type** as a human-readable string and a frozen embedding vector from a fixed model. This turns modality compatibility from a human judgment call into a computable quantity.
 
 ```python
-from canvas_engine import RegionSpec, transfer_distance
+from canvas_engineering import RegionSpec, transfer_distance
 
 cam = RegionSpec(
     bounds=(0, 8, 0, 12, 0, 12),
@@ -320,7 +314,7 @@ transfer_distance(cam, joints)   # ~0.65 — expensive (full MLP adapter)
 A `CanvasSchema` bundles layout + topology into a single portable, serializable object — the complete type signature for a canvas-based model.
 
 ```python
-from canvas_engine import CanvasSchema, CanvasLayout, RegionSpec, CanvasTopology, Connection
+from canvas_engineering import CanvasSchema, CanvasLayout, RegionSpec, CanvasTopology, Connection
 
 schema = CanvasSchema(
     layout=CanvasLayout(
@@ -393,7 +387,7 @@ The schema file is human-readable JSON. It declares everything needed to interpr
 Loop-indexed inverse temperature for bridging the soft→sharp attention discontinuity:
 
 ```python
-from canvas_engine import SharpeningSchedule
+from canvas_engineering import SharpeningSchedule
 
 schedule = SharpeningSchedule(max_loops=3, beta_min=1.0, beta_max=4.0)
 
@@ -430,16 +424,16 @@ examples/
 
 ```bash
 # Core (canvas + looped blocks)
-pip install canvas-engine
+pip install canvas-engineering
 
 # With CogVideoX support
-pip install canvas-engine[cogvideox]
+pip install canvas-engineering[cogvideox]
 
 # With video dataset loading
-pip install canvas-engine[data]
+pip install canvas-engineering[data]
 
 # Development
-pip install canvas-engine[dev]
+pip install canvas-engineering[dev]
 ```
 
 Requires Python 3.9+ and PyTorch 2.0+.

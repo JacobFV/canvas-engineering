@@ -41,7 +41,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 
-from canvas_engine.canvas import CanvasLayout
+from canvas_engineering.canvas import CanvasLayout
 
 
 @dataclass(frozen=True)
