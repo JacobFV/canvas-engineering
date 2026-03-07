@@ -1,12 +1,12 @@
 # canvas-engine
 
-### A type system for latent dynamics.
+### Prompt engineering, but for latent space.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-80%2F80-brightgreen.svg)]()
 
-> Video diffusion models have a latent space. **canvas-engine** gives that latent space *structure*. You declare which regions carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
+> Prompt engineering structures what an LLM *sees*. **Canvas engineering** structures what a diffusion model *thinks in*. You declare which regions of latent space carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
 
 <p align="center">
   <img src="assets/canvas_layouts_combined.png" alt="Canvas allocation layouts for three applications" width="100%">
@@ -17,7 +17,7 @@
 
 ## The idea
 
-A diffusion transformer's latent tensor is just a flat bag of positions. **canvas-engine** turns it into a structured, typed workspace by letting you declare:
+Prompt engineering gives LLMs structured context — few-shot examples, system instructions, tool descriptions — so they produce better outputs. Canvas engineering does the same thing one level deeper: it gives diffusion models structured *latent space* so they learn better representations. A diffusion transformer's latent tensor is just a flat bag of positions. **canvas-engine** turns it into a typed workspace by letting you declare:
 
 - **What** each region means — `RegionSpec` with bounds, temporal frequency, loss weight, input/output role
 - **How** regions interact — `CanvasTopology` as a directed graph of attention operations with temporal constraints
@@ -25,7 +25,7 @@ A diffusion transformer's latent tensor is just a flat bag of positions. **canva
 
 This is literally a type system. `region_indices()` is an offset calculation. `loss_weight_mask()` is type-directed codegen. The topology is a calling convention. Two agents with the same canvas schema can share latent state directly — no tokenization, no encoding — because the schema tells you what every position means.
 
-The library has two orthogonal pieces, validated over [26 experiments and 236 training runs](https://github.com/jacobmarks/recursive-omnimodal-video-action-model):
+The library has two orthogonal pieces, validated over [26 experiments and 236 training runs](https://github.com/JacobFV/recursive-omnimodal-video-action-model):
 
 ### 1. The canvas: structured multimodal latent space
 
@@ -450,7 +450,7 @@ Requires Python 3.9+ and PyTorch 2.0+.
 >
 > Jacob Valdez and Claude Opus 4.6
 
-[Paper PDF](papers/empirical/main.pdf) | [Full experiment data](https://github.com/jacobmarks/recursive-omnimodal-video-action-model/tree/main/experiments)
+[Paper PDF](papers/empirical/main.pdf) | [Full experiment data](https://github.com/JacobFV/recursive-omnimodal-video-action-model/tree/main/experiments)
 
 ## License
 
