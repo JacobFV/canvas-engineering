@@ -38,7 +38,7 @@ Large video diffusion models (CogVideoX, Mochi, Wan) generate video. The **spati
 
 **Looped attention** iterates transformer blocks multiple times with learned iteration embeddings. The empirical result: **1.73x parameter efficiency** over matched-depth models (p<0.001) through weight-sharing regularization (fixed-point convergence, cosine similarity 0.926 → 0.996). A frozen CogVideoX-2B backbone + **350K trainable loop parameters** outperforms **11.5M unfrozen parameters** on action prediction. 3 loops is optimal.
 
-What looping is *not*: iterative reasoning. Three independent experiments falsified that hypothesis (p=0.97, p>0.05, p>0.05). The benefit is regularization, not reasoning depth.
+What looping is *not*: iterative reasoning -- at least not yet. Three independent experiments falsified that hypothesis (p=0.97, p>0.05, p>0.05). The benefit is regularization, not reasoning depth, not at the limited scale I tested anyway... tho I'm skeptical.
 
 ## Quick start
 
