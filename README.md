@@ -444,7 +444,7 @@ Requires Python 3.9+ and PyTorch 2.0+.
 >
 > Jacob Valdez and Claude Opus 4.6
 
-[Paper PDF](papers/empirical/main.pdf) | [Full experiment data](https://github.com/JacobFV/recursive-omnimodal-video-action-model/tree/main/experiments)
+[Paper PDF](https://github.com/JacobFV/recursive-omnimodal-video-action-model/blob/16c4bed/papers/empirical/main.pdf) | [Full experiment data](https://github.com/JacobFV/recursive-omnimodal-video-action-model/tree/main/archive/experiments)
 
 ## License
 
