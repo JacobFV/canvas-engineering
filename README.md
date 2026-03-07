@@ -310,6 +310,9 @@ transfer_distance(cam, depth)    # ~0.15 — cheap to bridge (1-2 layers)
 transfer_distance(cam, joints)   # ~0.65 — expensive (full MLP adapter)
 ```
 
+<!-- Source: scripts/generate_semantic_diagrams.py :: generate_transfer_distance() -->
+<p align="center"><img src="assets/transfer_distance.png" alt="Semantic embedding space with transfer distances" width="65%"></p>
+
 **Why this matters:** If canvas schemas produce stable latent representations (an empirical hypothesis we're testing), then semantic embedding distance approximates the real cost of bridging two modalities — how many adapter layers, how much data. The embedding model must be fixed and declared so distances are comparable across time and projects.
 
 ## Canvas schemas
@@ -354,6 +357,10 @@ pairs = schema.compatible_regions(other_schema, threshold=0.3)
 ```
 
 The schema file is human-readable JSON. It declares everything needed to interpret a canvas tensor: geometry, region semantics, connectivity, and modality types. Two models with the same schema can share latent state directly.
+
+<!-- Source: scripts/generate_semantic_diagrams.py :: generate_schema_alignment() -->
+<p align="center"><img src="assets/schema_alignment.png" alt="Cross-schema region alignment between robot and computer agents" width="90%"></p>
+<p align="center"><i>Two agents with different canvas schemas. <code>compatible_regions()</code> finds semantically aligned region pairs — solid lines indicate direct latent transfer is possible, dashed lines require adapter layers.</i></p>
 
 ## API reference
 
