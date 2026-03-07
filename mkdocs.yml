@@ -63,10 +63,16 @@ nav:
     - Quick Start: getting-started/quickstart.md
   - Concepts:
     - The Canvas: concepts/canvas.md
+    - Canvas Types: concepts/canvas-types.md
     - Topology: concepts/topology.md
     - Attention Functions: concepts/attention-functions.md
     - Semantic Types: concepts/semantic-types.md
     - Looped Attention: concepts/looped-attention.md
+  - Examples:
+    - Overview: examples/index.md
+    - "01: Hello Types": examples/01-hello-types.md
+    - "02: Multi-Frequency Fusion": examples/02-multi-frequency.md
+    - "03: CartPole Control": examples/03-cartpole.md
   - Design Recipes:
     - Robot Manipulation: recipes/robot.md
     - Computer Use Agent: recipes/computer-use.md
@@ -76,6 +82,7 @@ nav:
     - canvas: api/canvas.md
     - connectivity: api/connectivity.md
     - schema: api/schema.md
+    - types: api/types.md
     - looped_block: api/looped_block.md
     - graft: api/graft.md
   - Research:

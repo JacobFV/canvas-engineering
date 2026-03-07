@@ -22,6 +22,7 @@ Large video diffusion models generate video. The **spatiotemporal canvas** exten
 
 ## Key features
 
+- **`Field` + `compile_schema()`** — Declare Python types whose fields are latent regions, compile to canvas schemas with auto-wired connectivity
 - **`RegionSpec`** — Declare geometry, temporal frequency, loss weight, semantic type, and default attention function per region
 - **`CanvasTopology`** — Directed graph of attention operations with temporal constraints and per-edge function types
 - **`CanvasSchema`** — Portable JSON-serializable bundle (layout + topology + metadata)
@@ -35,9 +36,20 @@ Large video diffusion models generate video. The **spatiotemporal canvas** exten
 pip install canvas-engineering
 ```
 
+## Runnable examples
+
+All examples train real models and generate visualizations. No GPU required.
+
+| Example | What it shows |
+|---------|--------------|
+| [Hello Canvas Types](examples/01-hello-types.md) | Declare, compile, train, visualize in 30 lines |
+| [Multi-Frequency Fusion](examples/02-multi-frequency.md) | Bandwidth-proportional allocation vs flat baseline |
+| [CartPole Control](examples/03-cartpole.md) | Real gym env, self-consistency loss, plan field PCA |
+
 ## Next steps
 
 - [Quick Start](getting-started/quickstart.md) — 30-line graft-and-train
+- [Canvas Types](concepts/canvas-types.md) — The compositional type system
 - [The Canvas](concepts/canvas.md) — How regions, frequency, and loss weighting work
 - [Attention Functions](concepts/attention-functions.md) — The full lineup of 16 function types
 - [Design Recipes](recipes/robot.md) — Real-world schema patterns

@@ -2,6 +2,9 @@
 
 Canvas engineering is a type system for latent dynamics. This page explains the analogy and the open research questions.
 
+!!! tip "New: Canvas Types"
+    The [Canvas Types](../concepts/canvas-types.md) module makes this concrete — declare Python types, compile to canvas schemas. See the [runnable examples](../examples/index.md) for end-to-end demonstrations.
+
 ## The analogy
 
 | Type system concept | Canvas equivalent | Implementation |
