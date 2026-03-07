@@ -246,6 +246,9 @@ CanvasTopology.causal_chain(["obs", "plan", "act"])  # A → B → C
 CanvasTopology.causal_temporal(["obs", "act"]) # same-frame self + prev-frame cross
 ```
 
+<!-- Source: scripts/generate_topology_diagrams.py :: generate_all() -->
+<p align="center"><img src="assets/topology_constructors.png" alt="Topology convenience constructors" width="100%"></p>
+
 The topology is the compute graph of attention operations — not a soft mask on dense attention. Block self-attention is one special case. Dense is another. The interesting cases are structured DAGs that mirror the causal/information-flow structure of your problem.
 
 ### Temporal connectivity
