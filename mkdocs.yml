@@ -73,6 +73,14 @@ nav:
     - "01: Hello Types": examples/01-hello-types.md
     - "02: Multi-Frequency Fusion": examples/02-multi-frequency.md
     - "03: CartPole Control": examples/03-cartpole.md
+    - "04: Vehicle Fleet": examples/04-vehicle-fleet.md
+    - "05: Protein Complex": examples/05-protein-complex.md
+    - "06: Air Traffic": examples/06-air-traffic.md
+    - "07: Hospital ICU": examples/07-hospital-icu.md
+    - "08: Minecraft World Model": examples/08-minecraft-world-model.md
+    - "09: BCI Neural Decoding": examples/09-bci.md
+    - "10: Fusion Reactor": examples/10-fusion-reactor.md
+    - "11: Mars Colony": examples/11-mars-colony.md
   - Design Recipes:
     - Robot Manipulation: recipes/robot.md
     - Computer Use Agent: recipes/computer-use.md
