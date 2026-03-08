@@ -1,55 +1,115 @@
-# Example 07: ICU Patient — Whole-Person Physiological Model
+# Example 07: Hospital ICU Ward
 
-The deepest type hierarchy in the library. Not "vitals as a blob" — every organ system, psychological state, social context. Declaring the causal structure of human physiology as a type hierarchy produces a model that predicts deterioration through mechanistic pathways, not just statistical correlation.
+The deepest type hierarchy in the library. 6 patients with organ-level physiology, 4 nurses with workload/fatigue dynamics, bureaucratic state (insurance, staffing, bed pressure), and family units. Declares the causal structure of a hospital ward as a type hierarchy.
 
-**Source**: [`examples/07_hospital_icu.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/07_hospital_icu.py) *(coming soon)*
+**Source**: [`examples/07_hospital_icu.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/07_hospital_icu.py)
 
-## What it demonstrates
+## Results
 
-- **Organ-level decomposition** — cardiovascular, respiratory, renal, neurological as separate type subtrees
-- **Multi-rate sensing** — ECG at period=1, blood pressure at period=2, labs at period=30
-- **Psychological + social fields** — pain, anxiety, social support as first-class latent regions
-- **Causal deterioration pathways** — the model must route information through physiological connections, not find statistical shortcuts
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/07_icu_patient.png" alt="Example 07 results" width="100%">
+</p>
 
-## Type hierarchy (partial)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/07_icu_patient.gif" alt="Example 07 ICU ward monitor animation" width="100%">
+</p>
+
+<video width="100%" controls>
+  <source src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/07_icu_patient.mp4" type="video/mp4">
+</video>
+
+**5×4 command center figure**: Per-patient vitals (HR, BP, SpO2, RR), organ system heatmaps, deterioration risk trajectories, nurse workload/fatigue, bureaucratic pressure indicators, and training curves — dark command center aesthetic.
+
+**Animation**: Ward monitor dashboard with patient vital signs, nurse status panels, alert system, bed pressure and staffing gauges, shift handoff indicators.
+
+## Type hierarchy
 
 ```python
 @dataclass
 class CardiovascularSystem:
-    heart_rhythm: Field = Field(4, 8, period=1, attn="mamba")  # ECG morphology
     heart_rate: Field = Field(1, 2, period=1)
-    blood_pressure: Field = Field(1, 4, period=2)              # sys/dia/map/pp
+    blood_pressure: Field = Field(1, 4, period=2)
     cardiac_output: Field = Field(1, 2, period=5)
-    peripheral_resistance: Field = Field(1, 2, period=5)
 
 @dataclass
 class RespiratorySystem:
     spo2: Field = Field(1, 2, period=1)
-    respiratory_rate: Field = Field(1, 1, period=1)
-    tidal_volume: Field = Field(1, 2, period=2)
-    airway_resistance: Field = Field(1, 2, period=10)
+    respiratory_rate: Field = Field(1, 2, period=1)
+    ventilator_settings: Field = Field(1, 4, period=2, is_output=False)
+
+@dataclass
+class RenalSystem:
+    urine_output: Field = Field(1, 2, period=12)
+    creatinine: Field = Field(1, 1, period=24)
+    electrolytes: Field = Field(1, 4, period=24)
+
+@dataclass
+class NeurologicalSystem:
+    consciousness: Field = Field(1, 4, period=6)
+    sedation_level: Field = Field(1, 2, period=4)
+    pain: Field = Field(1, 2, period=2)
+    delirium_risk: Field = Field(1, 2, period=12, loss_weight=3.0)
 
 @dataclass
 class PsychologicalState:
-    pain: Field = Field(1, 2, period=4)
     anxiety: Field = Field(1, 2, period=4)
-    consciousness: Field = Field(1, 4, period=2)               # GCS components
-    delirium_risk: Field = Field(1, 1, period=8, loss_weight=3.0)
+    sleep_quality: Field = Field(1, 2, period=24)
+    will_to_recover: Field = Field(1, 2, period=24, loss_weight=2.0)
 
 @dataclass
-class SocialContext:
-    family_presence: Field = Field(1, 1, period=60, is_output=False)
-    care_team_load: Field = Field(1, 2, period=30, is_output=False)
+class Patient:
+    cardiovascular: CardiovascularSystem
+    respiratory: RespiratorySystem
+    renal: RenalSystem
+    neurological: NeurologicalSystem
+    psychological: PsychologicalState
+    deterioration_risk: Field = Field(2, 4, loss_weight=8.0)
+    organ_failure_risk: Field = Field(1, 6, loss_weight=5.0)
 
 @dataclass
-class ICUPatient:
-    cardiovascular: CardiovascularSystem = field(default_factory=CardiovascularSystem)
-    respiratory: RespiratorySystem = field(default_factory=RespiratorySystem)
-    renal: RenalSystem = field(default_factory=RenalSystem)
-    neurological: NeurologicalSystem = field(default_factory=NeurologicalSystem)
-    psychological: PsychologicalState = field(default_factory=PsychologicalState)
-    social: SocialContext = field(default_factory=SocialContext)
-    deterioration_risk: Field = Field(1, 1, loss_weight=5.0)   # NEWS2-equivalent
+class Nurse:
+    workload: Field = Field(1, 2)
+    fatigue: Field = Field(1, 2, loss_weight=2.0)
+    stress: Field = Field(1, 2, loss_weight=2.0)
+    competence: Field = Field(1, 2, is_output=False)
+    rapport: Field = Field(1, 2)
+
+@dataclass
+class BureaucraticState:
+    insurance_auth: Field = Field(1, 2, is_output=False, period=24)
+    bed_pressure: Field = Field(1, 2, period=12)
+    staffing_ratio: Field = Field(1, 2, period=8)
+    discharge_pressure: Field = Field(1, 2, loss_weight=2.0)
+
+@dataclass
+class FamilyUnit:
+    presence: Field = Field(1, 2, is_output=False, period=24)
+    emotional_state: Field = Field(1, 2)
+    communication_quality: Field = Field(1, 2, loss_weight=1.5)
+
+@dataclass
+class ICUWard:
+    global_acuity: Field = Field(2, 4, loss_weight=3.0)
+    resource_state: Field = Field(1, 4, is_output=False)
+    patients: list       # 6 patients
+    nurses: list         # 4 nurses
+    bureaucratic: BureaucraticState
+    families: list       # 6 family units
+```
+
+## Connectivity
+
+```python
+bound = compile_schema(
+    ward, T=1, H=24, W=24, d_model=32,
+    connectivity=ConnectivityPolicy(
+        intra="dense",
+        parent_child="hub_spoke",
+        array_element="ring",
+        temporal="dense",
+    ),
+)
+# 152 fields, 576 positions, 1,466 connections
 ```
 
 ## The deterioration pathway
@@ -59,5 +119,9 @@ Sepsis trajectory: `renal.creatinine_rise` → `cardiovascular.mean_arterial_pre
 !!! warning "This is the flagship example"
     Every field has a physiological reason for existing. Every connection has a known biological pathway. The type system is not decoration — it is the domain knowledge.
 
-!!! note "Task spec"
-    Full implementation details in [`examples/tasks/07_hospital_icu.md`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/tasks/07_hospital_icu.md).
+## Run it
+
+```bash
+python examples/07_hospital_icu.py
+# Generates: assets/examples/07_icu_patient.{png,gif,mp4}
+```
