@@ -82,37 +82,28 @@ class LayoutStrategy(Enum):
 class ConnectivityPolicy:
     """Default connectivity rules for compiled schemas.
 
+    Every nested type and array element automatically gets a gateway
+    field at its own path. Parent fields connect bidirectionally to the
+    gateway; the gateway connects bidirectionally to child fields.
+
+    Gateway size is configured on the types themselves:
+      - Set ``__gateway__ = Field(h, w)`` on a class to define its
+        default gateway size when it appears as a child anywhere.
+      - Set ``metadata={"gateway": Field(h, w)}`` on a dataclass field
+        to override the gateway for that specific parent→child edge.
+      - Falls back to Field(1, 1) if neither is set.
+
     Args:
-        intra: How fields within a type connect.
+        intra: How fields within a single type connect.
             "dense" (default), "isolated", "causal_chain", "star"
-        parent_child: How parent fields connect to child fields.
-            "matched_fields" (default), "hub_spoke", "broadcast",
-            "aggregate", "bottleneck", "none"
         array_element: How elements of the same list connect.
             "isolated" (default), "dense", "matched_fields", "ring"
         temporal: Temporal constraint policy for all connections.
             "dense" (default), "causal", "same_frame"
-        gateway_size: Default (h, w) for auto-generated gateway fields
-            when parent_child="bottleneck". Default (1, 1).
-        gateway_sizes: Per-child overrides mapping child local_name or
-            path suffix to (h, w). E.g. {"employees": (4, 4)} gives
-            the employee array gateway more bandwidth.
-            Checked against both the child's local_name and its full
-            path, so "employees" matches both a field named "employees"
-            and a path like "company.employees".
-
-    The "bottleneck" parent_child policy auto-generates a gateway field
-    for each child/array-element at the child's own path. Parent fields
-    connect to the gateway; the gateway connects to child fields.
-    Cross-level attention is O(gateway_size) per entity instead of
-    O(parent_fields × child_fields).
     """
     intra: str = "dense"
-    parent_child: str = "matched_fields"
     array_element: str = "isolated"
     temporal: str = "dense"
-    gateway_size: Tuple[int, int] = (1, 1)
-    gateway_sizes: Optional[Dict[str, Tuple[int, int]]] = None
 
 
 # ── Tree Walking (Internal) ──────────────────────────────────────────
@@ -133,6 +124,7 @@ class _TypeNode:
     children: List['_TypeNode']
     arrays: Dict[str, List['_TypeNode']]
     parent: Optional['_TypeNode']
+    gateway_field: Optional[Field] = None  # resolved gateway config for this node
 
 
 _SKIP_TYPES = (int, float, str, bool, type(None), bytes, torch.Tensor, Field)
@@ -174,8 +166,37 @@ def _has_canvas_fields(obj: Any) -> bool:
     return False
 
 
+def _resolve_gateway(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
+    """Determine gateway Field for a child.
+
+    Priority:
+      1. Parent's dataclass field metadata: ``metadata={"gateway": Field(...)}``
+      2. Child type's ``__gateway__`` class attribute
+      3. Default: ``Field(1, 1)``
+    """
+    # 1. Parent field metadata override
+    if hasattr(parent_obj, '__dataclass_fields__'):
+        dc_fields = parent_obj.__dataclass_fields__
+        if attr_name in dc_fields:
+            meta = dc_fields[attr_name].metadata
+            if meta and "gateway" in meta:
+                gw = meta["gateway"]
+                if isinstance(gw, Field):
+                    return gw
+
+    # 2. Child type's __gateway__
+    child_type = type(child_obj)
+    type_gw = getattr(child_type, '__gateway__', None)
+    if isinstance(type_gw, Field):
+        return type_gw
+
+    # 3. Default
+    return Field(1, 1)
+
+
 def _walk(obj: Any, path: str = "", local_name: str = "",
-          parent: Optional[_TypeNode] = None) -> _TypeNode:
+          parent: Optional[_TypeNode] = None,
+          parent_obj: Any = None) -> _TypeNode:
     """Walk an object tree and build a _TypeNode hierarchy."""
     node = _TypeNode(
         path=path, fields=[], children=[],
@@ -198,14 +219,18 @@ def _walk(obj: Any, path: str = "", local_name: str = "",
             for i, item in enumerate(value):
                 if not isinstance(item, _SKIP_TYPES) and _has_canvas_fields(item):
                     elem_path = "{}[{}]".format(child_path, i)
-                    elem_node = _walk(item, elem_path, attr_name, parent=node)
+                    elem_node = _walk(item, elem_path, attr_name,
+                                      parent=node, parent_obj=obj)
+                    elem_node.gateway_field = _resolve_gateway(item, obj, attr_name)
                     elements.append(elem_node)
             if elements:
                 node.arrays[attr_name] = elements
 
         elif not isinstance(value, _SKIP_TYPES):
             if _has_canvas_fields(value):
-                child_node = _walk(value, child_path, attr_name, parent=node)
+                child_node = _walk(value, child_path, attr_name,
+                                   parent=node, parent_obj=obj)
+                child_node.gateway_field = _resolve_gateway(value, obj, attr_name)
                 node.children.append(child_node)
 
     return node
@@ -257,67 +282,40 @@ def _flatten_fields_raw(node: _TypeNode) -> List[_FieldEntry]:
     return result
 
 
-def _resolve_gateway_size(
-    child_path: str,
-    local_name: str,
-    policy: ConnectivityPolicy,
-) -> Tuple[int, int]:
-    """Determine gateway (h, w) for a child node.
-
-    Checks policy.gateway_sizes for a match against the child's local_name
-    or any suffix of its path, falling back to policy.gateway_size.
-    """
-    overrides = policy.gateway_sizes
-    if overrides:
-        # Check local name first (e.g. "employees")
-        if local_name in overrides:
-            return overrides[local_name]
-        # Check full path and suffixes (e.g. "company.employees")
-        if child_path in overrides:
-            return overrides[child_path]
-        # Check path suffixes (e.g. match "employees" against "firm.employees")
-        for key, size in overrides.items():
-            if child_path.endswith("." + key) or child_path.endswith("[" + key):
-                return size
-    return policy.gateway_size
-
-
-def _insert_gateways(node: _TypeNode, policy: ConnectivityPolicy) -> _TypeNode:
+def _insert_gateways(node: _TypeNode) -> _TypeNode:
     """Insert gateway fields between parent and each child/array-element.
 
     For each child node, creates a new intermediate node containing a
     gateway field at the child's path. The original child becomes a
-    grandchild. This forces cross-level attention to bottleneck through
-    the gateway.
+    grandchild. Cross-level attention bottlenecks through the gateway.
 
-    Gateway size is determined by policy.gateway_size (default) and
-    policy.gateway_sizes (per-child overrides).
+    Gateway params come from the child's ``gateway_field`` (resolved
+    during _walk from ``__gateway__`` class attrs and field metadata).
 
     Before: Parent → [Child1(fields...), Child2(fields...)]
     After:  Parent → [GW1(gateway) → Child1(fields...), GW2(gateway) → Child2(fields...)]
-
-    The gateway field's path is the child's path (e.g. "employees[0]"),
-    which won't conflict with the child's own fields (e.g. "employees[0].thought").
 
     Returns the modified node (in-place).
     """
     # Process children
     new_children = []
     for child in node.children:
-        _insert_gateways(child, policy)  # recurse first
+        _insert_gateways(child)  # recurse first
 
         local = child.path.rsplit(".", 1)[-1] if "." in child.path else child.path
-        gh, gw = _resolve_gateway_size(child.path, local, policy)
+        gw_template = child.gateway_field or Field(1, 1)
         mp = _median_period_from_tree(child)
         gateway_field = Field(
-            gh, gw, period=mp,
-            semantic_type="gateway: {}".format(child.path),
+            gw_template.h, gw_template.w, period=mp,
+            semantic_type=gw_template.semantic_type or "gateway: {}".format(child.path),
+            is_output=gw_template.is_output,
+            loss_weight=gw_template.loss_weight,
+            attn=gw_template.attn,
         )
         gateway_entry = _FieldEntry(
             path=child.path, field=gateway_field, local_name=local,
         )
 
-        # Wrap child in an intermediate gateway node
         gateway_node = _TypeNode(
             path=child.path,
             fields=[gateway_entry],
@@ -334,13 +332,16 @@ def _insert_gateways(node: _TypeNode, policy: ConnectivityPolicy) -> _TypeNode:
     for array_name, elements in node.arrays.items():
         new_elements = []
         for elem in elements:
-            _insert_gateways(elem, policy)  # recurse first
+            _insert_gateways(elem)  # recurse first
 
-            gh, gw = _resolve_gateway_size(elem.path, array_name, policy)
+            gw_template = elem.gateway_field or Field(1, 1)
             mp = _median_period_from_tree(elem)
             gateway_field = Field(
-                gh, gw, period=mp,
-                semantic_type="gateway: {}".format(elem.path),
+                gw_template.h, gw_template.w, period=mp,
+                semantic_type=gw_template.semantic_type or "gateway: {}".format(elem.path),
+                is_output=gw_template.is_output,
+                loss_weight=gw_template.loss_weight,
+                attn=gw_template.attn,
             )
             gateway_entry = _FieldEntry(
                 path=elem.path, field=gateway_field, local_name=array_name,
@@ -502,50 +503,19 @@ def _intra_connections(node: _TypeNode, policy: ConnectivityPolicy) -> List[Conn
 
 
 def _parent_child_connections(
-    parent: _TypeNode, child: _TypeNode, policy: ConnectivityPolicy,
+    parent: _TypeNode, child: _TypeNode,
 ) -> List[Connection]:
-    """Connect parent fields to child fields."""
+    """Connect parent fields to child fields (bidirectional).
+
+    With gateway insertion, this is always called between a parent node
+    and a gateway node (or gateway node and its child). The gateway
+    provides the bottleneck — no policy dispatch needed.
+    """
     conns = []
-
-    if policy.parent_child == "none":
-        return conns
-
-    elif policy.parent_child == "matched_fields":
-        for pf in parent.fields:
-            for cf in child.fields:
-                if pf.local_name == cf.local_name:
-                    conns.append(Connection(src=pf.path, dst=cf.path))
-                    conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "hub_spoke":
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=pf.path, dst=cf.path))
-                conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "broadcast":
-        # Children read from parent (parent is dst/keys, child is src/queries)
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "aggregate":
-        # Parent reads from children (child is dst/keys, parent is src/queries)
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=pf.path, dst=cf.path))
-
-    elif policy.parent_child == "bottleneck":
-        # With gateway insertion, the intermediate gateway node's single
-        # field connects to both parent and child via hub_spoke at each
-        # level. This is handled by the tree transformation in
-        # _insert_gateways; after insertion, use hub_spoke for actual
-        # connectivity generation.
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=pf.path, dst=cf.path))
-                conns.append(Connection(src=cf.path, dst=pf.path))
-
+    for pf in parent.fields:
+        for cf in child.fields:
+            conns.append(Connection(src=pf.path, dst=cf.path))
+            conns.append(Connection(src=cf.path, dst=pf.path))
     return conns
 
 
@@ -599,13 +569,13 @@ def _generate_connections(
     # Recurse into single children
     for child in node.children:
         conns.extend(_generate_connections(child, policy))
-        conns.extend(_parent_child_connections(node, child, policy))
+        conns.extend(_parent_child_connections(node, child))
 
     # Recurse into array elements
     for elements in node.arrays.values():
         for elem in elements:
             conns.extend(_generate_connections(elem, policy))
-            conns.extend(_parent_child_connections(node, elem, policy))
+            conns.extend(_parent_child_connections(node, elem))
         conns.extend(_array_element_connections(elements, policy))
 
     return conns
@@ -859,12 +829,11 @@ def compile_schema(
     When H and/or W are None, they are auto-computed from the declared field
     dimensions — like a C compiler sizing a struct from its members.
 
-    When connectivity.parent_child == "bottleneck", each nested type and
-    array element automatically gets a gateway field at its own path.
-    Gateway size defaults to (1, 1) but can be configured via
-    connectivity.gateway_size and connectivity.gateway_sizes. Cross-level
-    attention routes through gateways, making hierarchical interactions
-    O(gateway_size) per entity rather than O(fields²).
+    Every nested type and array element automatically gets a gateway
+    field at its own path. Gateway size is configured on the types:
+      - ``__gateway__ = Field(h, w)`` on the child class
+      - ``metadata={"gateway": Field(h, w)}`` on the parent's field
+      - Falls back to Field(1, 1)
 
     Args:
         root: Object with Field attributes. Lists create array regions.
@@ -873,7 +842,7 @@ def compile_schema(
         W: Width of the canvas grid. None = auto-sized.
         d_model: Latent dimensionality per position. Default 64.
         connectivity: Connectivity policy. Default: dense intra,
-            matched_fields parent-child, isolated arrays, dense temporal.
+            isolated arrays, dense temporal.
         layout_strategy: "packed" (default) or "interleaved".
         t_current: Timestep boundary for output mask.
 
@@ -904,9 +873,8 @@ def compile_schema(
     # 1. Walk the object tree
     tree = _walk(root)
 
-    # 1b. If bottleneck policy, insert gateway fields
-    if connectivity.parent_child == "bottleneck":
-        _insert_gateways(tree, connectivity)
+    # 1b. Insert gateway fields for all nested types
+    _insert_gateways(tree)
 
     # 2. Flatten to field list
     flat = _flatten_fields(tree)

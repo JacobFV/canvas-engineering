@@ -10,7 +10,7 @@ from canvas_engineering.types import (
     _walk, _flatten_fields, _pack_strip, _pack_interleaved,
     _intra_connections, _parent_child_connections, _array_element_connections,
     _generate_connections, _apply_temporal, _deduplicate,
-    _insert_gateways, _auto_canvas_size,
+    _insert_gateways, _auto_canvas_size, _resolve_gateway,
 )
 from canvas_engineering.canvas import SpatiotemporalCanvas
 from canvas_engineering.connectivity import Connection
@@ -271,39 +271,14 @@ class TestConnectivity:
         # No spoke-spoke
         assert ("a", "b") not in pairs
 
-    def test_parent_child_matched_fields(self):
-        company = Company(employees=[Employee()])
-        node = _walk(company)
-        emp_node = node.arrays["employees"][0]
-        policy = ConnectivityPolicy(parent_child="matched_fields")
-        conns = _parent_child_connections(node, emp_node, policy)
-        pairs = {(c.src, c.dst) for c in conns}
-        # thought matches thought
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("employees[0].thought", "thought") in pairs
-        # goal matches goal
-        assert ("goal", "employees[0].goal") in pairs
-        assert ("employees[0].goal", "goal") in pairs
-        # role has no match in parent
-        assert not any(c.src == "employees[0].role" or c.dst == "employees[0].role"
-                       for c in conns if "role" in c.src or "role" in c.dst)
-
-    def test_parent_child_hub_spoke(self):
+    def test_parent_child_bidirectional(self):
+        """Parent-child connections are always bidirectional."""
         robot = Robot()
         node = _walk(robot)
         sensor_node = node.children[0]
-        policy = ConnectivityPolicy(parent_child="hub_spoke")
-        conns = _parent_child_connections(node, sensor_node, policy)
+        conns = _parent_child_connections(node, sensor_node)
         # All parent fields connect to all child fields bidirectionally
         assert len(conns) == 2 * 2 * 2  # 2 parent fields * 2 child fields * 2 directions
-
-    def test_parent_child_none(self):
-        robot = Robot()
-        node = _walk(robot)
-        sensor_node = node.children[0]
-        policy = ConnectivityPolicy(parent_child="none")
-        conns = _parent_child_connections(node, sensor_node, policy)
-        assert len(conns) == 0
 
     def test_array_element_isolated(self):
         company = Company(employees=[Employee(), Employee()])
@@ -447,9 +422,11 @@ class TestCompileSchema:
         bound = compile_schema(robot, T=4, H=16, W=16, d_model=128)
         assert "plan" in bound
         assert "action" in bound
+        assert "sensor" in bound  # gateway
         assert "sensor.camera" in bound
         assert "sensor.depth" in bound
-        assert len(bound.field_names) == 4
+        # 2 robot fields + 1 gateway + 2 sensor fields = 5
+        assert len(bound.field_names) == 5
 
     def test_arrays(self):
         company = Company(
@@ -459,12 +436,15 @@ class TestCompileSchema:
         bound = compile_schema(company, T=4, H=32, W=32, d_model=128)
         assert "thought" in bound
         assert "goal" in bound
+        assert "employees[0]" in bound  # gateway
         assert "employees[0].thought" in bound
         assert "employees[0].role" in bound
+        assert "employees[1]" in bound  # gateway
         assert "employees[1].thought" in bound
+        assert "products[0]" in bound  # gateway
         assert "products[0].description" in bound
-        # 2 company + 2*3 employee + 1*1 product = 9
-        assert len(bound.field_names) == 9
+        # 2 company + 3 gateways + 2*3 employee + 1*1 product = 12
+        assert len(bound.field_names) == 12
 
     def test_connectivity_generated(self):
         bound = compile_schema(SimpleType(), T=4, H=8, W=8, d_model=128)
@@ -473,22 +453,24 @@ class TestCompileSchema:
         # Dense intra: x↔x, x↔y, y↔x, y↔y = 4
         assert len(conns) == 4
 
-    def test_matched_fields_connectivity(self):
+    def test_gateway_connectivity(self):
         company = Company(employees=[Employee()])
         bound = compile_schema(company, T=4, H=16, W=16, d_model=128)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        # Parent-child matched: thought↔thought, goal↔goal
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("employees[0].thought", "thought") in pairs
+        # Parent connects to gateway, gateway connects to child fields
+        assert ("thought", "employees[0]") in pairs
+        assert ("employees[0]", "thought") in pairs
+        assert ("employees[0]", "employees[0].thought") in pairs
+        assert ("employees[0].thought", "employees[0]") in pairs
 
     def test_isolated_array_elements(self):
         company = Company(employees=[Employee(), Employee()])
         bound = compile_schema(company, T=4, H=32, W=32, d_model=128)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        # Elements should NOT connect to each other (isolated default)
-        assert ("employees[0].thought", "employees[1].thought") not in pairs
+        # Gateways should NOT connect to each other (isolated default)
+        assert ("employees[0]", "employees[1]") not in pairs
 
     def test_dense_array_elements(self):
         company = Company(employees=[Employee(), Employee()])
@@ -497,7 +479,8 @@ class TestCompileSchema:
             company, T=4, H=32, W=32, d_model=128, connectivity=policy)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        assert ("employees[0].thought", "employees[1].thought") in pairs
+        # Dense: gateways connect to each other
+        assert ("employees[0]", "employees[1]") in pairs
 
     def test_causal_temporal(self):
         policy = ConnectivityPolicy(temporal="causal")
@@ -509,12 +492,12 @@ class TestCompileSchema:
         assert any(c.t_src == 0 and c.t_dst == 0 for c in self_conns)
         assert any(c.t_src == 0 and c.t_dst == -1 for c in self_conns)
 
-    def test_no_connectivity(self):
-        policy = ConnectivityPolicy(intra="isolated", parent_child="none")
+    def test_isolated_connectivity(self):
+        policy = ConnectivityPolicy(intra="isolated")
         bound = compile_schema(
             SimpleType(), T=4, H=8, W=8, d_model=128, connectivity=policy)
         conns = bound.topology.connections
-        # Only self-loops
+        # Only self-loops (SimpleType has no children, so no gateways)
         assert all(c.src == c.dst for c in conns)
 
     def test_interleaved_layout(self):
@@ -696,16 +679,16 @@ class TestCompanyIntegration:
             company, T=4, H=64, W=64, d_model=256,
             connectivity=ConnectivityPolicy(
                 intra="dense",
-                parent_child="matched_fields",
                 array_element="isolated",
             ),
         )
 
-        # Correct number of fields
         # Company: thought, goal (2)
+        # 3 employee gateways (employees[0], [1], [2]) = 3
         # 3 employees × 3 fields (thought, goal, role) = 9
+        # 2 product gateways (products[0], [1]) = 2
         # 2 products × 1 field (description) = 2
-        assert len(bound.field_names) == 13
+        assert len(bound.field_names) == 18
 
         # CEO got bigger thought
         ceo_thought = bound["employees[0].thought"]
@@ -715,18 +698,15 @@ class TestCompanyIntegration:
         ceo_w = ceo_thought.spec.bounds[5] - ceo_thought.spec.bounds[4]
         assert ceo_h == 8 and ceo_w == 8
 
-        # Matched fields connectivity exists
+        # Gateway connectivity: parent → gateway → child
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("thought", "employees[1].thought") in pairs
-        assert ("goal", "employees[0].goal") in pairs
-
-        # Products have no matched fields with Company
-        assert not any(
-            "products" in c.src and c.dst in ("thought", "goal")
-            for c in conns
-        )
+        # Parent fields connect to employee gateways
+        assert ("thought", "employees[0]") in pairs
+        assert ("goal", "employees[0]") in pairs
+        # Gateways connect to child fields
+        assert ("employees[0]", "employees[0].thought") in pairs
+        assert ("employees[0]", "employees[0].goal") in pairs
 
         # Can build canvas and create batch
         canvas = bound.build_canvas()
@@ -833,7 +813,7 @@ class TestBottleneck:
         """Bottleneck should create a gateway field at the child's path."""
         bound = compile_schema(
             Robot(), T=4, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         # Robot has nested Sensor — should get a gateway at "sensor"
         assert "sensor" in bound
@@ -847,7 +827,7 @@ class TestBottleneck:
         """Gateway fields should be 1×1."""
         bound = compile_schema(
             Robot(), T=4, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         gw = bound["sensor"]
         t0, t1, h0, h1, w0, w1 = gw.spec.bounds
@@ -857,7 +837,7 @@ class TestBottleneck:
         """Gateway should connect to both parent and child fields."""
         bound = compile_schema(
             Robot(), T=1, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         conns = bound.topology.connections
         # Gateway "sensor" should connect to parent fields ("plan", "action")
@@ -876,7 +856,7 @@ class TestBottleneck:
         """With bottleneck, parent fields should NOT connect directly to child fields."""
         bound = compile_schema(
             Robot(), T=1, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         conns = bound.topology.connections
         # "plan" should NOT connect directly to "sensor.camera"
@@ -892,7 +872,7 @@ class TestBottleneck:
         )
         bound = compile_schema(
             company, T=1, H=32, W=32, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         # Each employee should have a gateway at "employees[i]"
         assert "employees[0]" in bound
@@ -910,7 +890,7 @@ class TestBottleneck:
         bound = compile_schema(
             company, T=1, H=32, W=32, d_model=64,
             connectivity=ConnectivityPolicy(
-                parent_child="bottleneck",
+
                 array_element="isolated",
             ),
         )
@@ -938,7 +918,7 @@ class TestBottleneck:
 
         bound = compile_schema(
             Outer(), T=1, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         # Gateway for Middle
         assert "middle" in bound
@@ -957,7 +937,7 @@ class TestBottleneck:
         )
         bound = compile_schema(
             company, T=1, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         # Should have gateways and be auto-sized
         assert "employees[0]" in bound
@@ -969,48 +949,97 @@ class TestBottleneck:
         """Gateway fields should have descriptive semantic types."""
         bound = compile_schema(
             Robot(), T=1, H=16, W=16, d_model=64,
-            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+            connectivity=ConnectivityPolicy(),
         )
         gw = bound["sensor"]
         assert "gateway" in gw.spec.semantic_type
         assert "sensor" in gw.spec.semantic_type
 
-    def test_custom_gateway_size_default(self):
-        """gateway_size sets the default for all gateways."""
-        bound = compile_schema(
-            Robot(), T=1, H=32, W=32, d_model=64,
-            connectivity=ConnectivityPolicy(
-                parent_child="bottleneck",
-                gateway_size=(2, 4),
-            ),
-        )
+    def test_gateway_from_class_attribute(self):
+        """__gateway__ on child class sets gateway size."""
+        @dataclass
+        class BigSensor:
+            __gateway__ = Field(2, 4)
+            cam: Field = Field(6, 6)
+            lidar: Field = Field(4, 4)
+
+        @dataclass
+        class Bot:
+            sensor: BigSensor = dc_field(default_factory=BigSensor)
+            act: Field = Field(1, 4)
+
+        bound = compile_schema(Bot(), H=32, W=32, d_model=64)
         gw = bound["sensor"]
         t0, t1, h0, h1, w0, w1 = gw.spec.bounds
         assert (h1 - h0) == 2 and (w1 - w0) == 4
 
-    def test_custom_gateway_size_per_child(self):
-        """gateway_sizes overrides specific children by local name."""
-        company = Company(
-            employees=[Employee(), Employee()],
-            products=[Product()],
-        )
-        bound = compile_schema(
-            company, T=1, H=32, W=32, d_model=64,
-            connectivity=ConnectivityPolicy(
-                parent_child="bottleneck",
-                gateway_size=(1, 1),
-                gateway_sizes={"employees": (4, 4)},
-            ),
-        )
-        # Employee gateways should be 4×4
-        gw0 = bound["employees[0]"]
+    def test_gateway_from_field_metadata(self):
+        """metadata={\"gateway\": Field(...)} overrides __gateway__."""
+        @dataclass
+        class Inner:
+            __gateway__ = Field(1, 1)
+            x: Field = Field(2, 2)
+
+        @dataclass
+        class Outer:
+            child: Inner = dc_field(
+                default_factory=Inner,
+                metadata={"gateway": Field(3, 3)},
+            )
+            z: Field = Field(1, 2)
+
+        bound = compile_schema(Outer(), H=16, W=16, d_model=64)
+        gw = bound["child"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 3 and (w1 - w0) == 3
+
+    def test_gateway_metadata_on_array(self):
+        """metadata on a list field applies to all element gateways."""
+        @dataclass
+        class Host:
+            workers: list = dc_field(
+                default_factory=list,
+                metadata={"gateway": Field(4, 4)},
+            )
+            ctrl: Field = Field(1, 2)
+
+        host = Host(workers=[Employee(), Employee()])
+        bound = compile_schema(host, H=32, W=32, d_model=64)
+        gw0 = bound["workers[0]"]
         t0, t1, h0, h1, w0, w1 = gw0.spec.bounds
         assert (h1 - h0) == 4 and (w1 - w0) == 4
 
-        # Product gateway should use default 1×1
-        gw_prod = bound["products[0]"]
-        t0, t1, h0, h1, w0, w1 = gw_prod.spec.bounds
-        assert (h1 - h0) == 1 and (w1 - w0) == 1
+    def test_resolve_gateway_priority(self):
+        """Field metadata > __gateway__ > default."""
+        @dataclass
+        class Child:
+            __gateway__ = Field(3, 3)
+            x: Field = Field(1, 1)
+
+        @dataclass
+        class ParentOverride:
+            child: Child = dc_field(
+                default_factory=Child,
+                metadata={"gateway": Field(5, 5)},
+            )
+            y: Field = Field(1, 1)
+
+        @dataclass
+        class ParentDefault:
+            child: Child = dc_field(default_factory=Child)
+            y: Field = Field(1, 1)
+
+        # metadata override
+        gw = _resolve_gateway(Child(), ParentOverride(), "child")
+        assert gw.h == 5 and gw.w == 5
+
+        # __gateway__ fallback
+        gw = _resolve_gateway(Child(), ParentDefault(), "child")
+        assert gw.h == 3 and gw.w == 3
+
+        # plain default
+        gw = _resolve_gateway(SimpleType(), ParentDefault(), "child")
+        assert gw.h == 1 and gw.w == 1
 
     def test_t_defaults_to_1(self):
         """T should default to 1 when not specified."""
