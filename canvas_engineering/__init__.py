@@ -24,8 +24,14 @@ from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
     BoundField, BoundSchema, compile_schema,
 )
+from canvas_engineering.semantic import (
+    SemanticConditioner,
+    auto_semantic_type,
+    compute_semantic_embeddings,
+)
 
 __version__ = "0.1.1"
+# TODO: Bump to 0.2.0 before deploying general-unified-world-model 0.0.3
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -48,4 +54,7 @@ __all__ = [
     "BoundField",
     "BoundSchema",
     "compile_schema",
+    "SemanticConditioner",
+    "auto_semantic_type",
+    "compute_semantic_embeddings",
 ]

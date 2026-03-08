@@ -539,9 +539,17 @@ class BoundSchema:
     def __contains__(self, path: str) -> bool:
         return path in self._fields
 
-    def build_canvas(self) -> SpatiotemporalCanvas:
-        """Create and store a SpatiotemporalCanvas for this schema."""
-        self._canvas = SpatiotemporalCanvas(self.layout)
+    def build_canvas(self, semantic_conditioner=None) -> SpatiotemporalCanvas:
+        """Create and store a SpatiotemporalCanvas for this schema.
+
+        Args:
+            semantic_conditioner: Optional SemanticConditioner for semantic
+                embedding conditioning. If provided, replaces learned modality
+                embeddings with frozen semantic embeddings + learned residuals.
+        """
+        self._canvas = SpatiotemporalCanvas(
+            self.layout, semantic_conditioner=semantic_conditioner
+        )
         return self._canvas
 
     def create_batch(self, batch_size: int) -> torch.Tensor:
@@ -549,6 +557,55 @@ class BoundSchema:
         if self._canvas is None:
             self.build_canvas()
         return self._canvas.create_empty(batch_size)
+
+    def build_semantic_conditioner(
+        self,
+        embed_fn,
+        embed_dim: int = 1536,
+        freeze_embeddings: bool = True,
+        learn_residuals: bool = True,
+    ):
+        """Build a SemanticConditioner from this schema's field paths.
+
+        Computes semantic embeddings for all fields using the provided
+        embedding function, then creates a SemanticConditioner.
+
+        Args:
+            embed_fn: Callable taking list[str] → list[list[float]].
+                Each string is a semantic type description.
+            embed_dim: Dimension of the embeddings returned by embed_fn.
+            freeze_embeddings: If True, freeze the raw embeddings.
+            learn_residuals: If True, add learned residuals.
+
+        Returns:
+            SemanticConditioner ready to use with build_canvas().
+
+        Example:
+            conditioner = bound.build_semantic_conditioner(my_embed_fn)
+            canvas = bound.build_canvas(semantic_conditioner=conditioner)
+        """
+        from canvas_engineering.semantic import (
+            SemanticConditioner,
+            compute_semantic_embeddings,
+        )
+
+        # Collect semantic types from region specs
+        semantic_types = {}
+        for path, bf in self._fields.items():
+            if bf.spec.semantic_type:
+                semantic_types[path] = bf.spec.semantic_type
+
+        embeddings = compute_semantic_embeddings(
+            self.field_names, embed_fn, semantic_types=semantic_types,
+        )
+
+        return SemanticConditioner(
+            d_model=self.layout.d_model,
+            embed_dim=embed_dim,
+            region_embeddings=embeddings,
+            freeze_embeddings=freeze_embeddings,
+            learn_residuals=learn_residuals,
+        )
 
     def summary(self) -> str:
         """Human-readable summary of the compiled schema."""
@@ -638,19 +695,23 @@ def compile_schema(
         hw_bounds = _pack_strip(pack_input, H, W)
 
     # 4. Build RegionSpecs with full bounds (t0, t1, h0, h1, w0, w1)
+    from canvas_engineering.semantic import auto_semantic_type
+
     field_map = {path: f for path, f, _ in flat}
     regions = {}  # type: Dict[str, Union[Tuple, RegionSpec]]
     for path, (h0, h1, w0, w1) in hw_bounds.items():
         f = field_map[path]
         t_extent = f.temporal_extent if f.temporal_extent is not None else T
         t_extent = min(t_extent, T)
+        # Auto-generate semantic_type from path if not explicitly set
+        sem_type = f.semantic_type if f.semantic_type else auto_semantic_type(path)
         regions[path] = RegionSpec(
             bounds=(0, t_extent, h0, h1, w0, w1),
             period=f.period,
             is_output=f.is_output,
             loss_weight=f.loss_weight,
             default_attn=f.attn,
-            semantic_type=f.semantic_type,
+            semantic_type=sem_type,
         )
 
     # 5. Generate connectivity

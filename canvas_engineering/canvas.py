@@ -302,11 +302,23 @@ class SinusoidalPositionalEncoding3D(nn.Module):
 class SpatiotemporalCanvas(nn.Module):
     """Manages the unified canvas tensor with positional + modality embeddings.
 
+    Supports two modes of per-region identity:
+    1. **Learned modality embeddings** (default): one learned vector per region,
+       added when data is placed. Backward compatible with all existing code.
+    2. **Semantic conditioning**: frozen embeddings from a text model, projected
+       to d_model with optional learned residuals. Pass a SemanticConditioner
+       to ``__init__`` to enable. Replaces learned modality embeddings.
+
     Example:
         canvas_mod = SpatiotemporalCanvas(layout)
         canvas = canvas_mod.create_empty(batch_size=4)  # (4, T*H*W, d_model)
         canvas = canvas_mod.place(canvas, visual_embs, "visual")
         action_embs = canvas_mod.extract(canvas, "action")
+
+        # With semantic conditioning:
+        from canvas_engineering.semantic import SemanticConditioner
+        cond = SemanticConditioner(d_model=256, embed_dim=1536, region_embeddings={...})
+        canvas_mod = SpatiotemporalCanvas(layout, semantic_conditioner=cond)
     """
 
     @staticmethod
@@ -314,29 +326,45 @@ class SpatiotemporalCanvas(nn.Module):
         """Sanitize region name for use as a PyTorch ParameterDict key."""
         return name.replace(".", "__").replace("[", "_").replace("]", "_")
 
-    def __init__(self, layout: CanvasLayout):
+    def __init__(self, layout: CanvasLayout, semantic_conditioner=None):
         super().__init__()
         self.layout = layout
+        self.semantic_conditioner = semantic_conditioner
         self.pos_enc = SinusoidalPositionalEncoding3D(
             layout.d_model, max_T=layout.T, max_H=layout.H, max_W=layout.W
         )
         self.empty_token = nn.Parameter(torch.randn(layout.d_model) * 0.02)
         # Map region_name -> sanitized key for ParameterDict compatibility
         self._key_map = {name: self._sanitize_key(name) for name in layout.regions}
-        self.modality_embeddings = nn.ParameterDict(
-            {self._key_map[name]: nn.Parameter(torch.randn(layout.d_model) * 0.02)
-             for name in layout.regions}
-        )
+
+        if semantic_conditioner is None:
+            # Use learned modality embeddings (backward compatible)
+            self.modality_embeddings = nn.ParameterDict(
+                {self._key_map[name]: nn.Parameter(torch.randn(layout.d_model) * 0.02)
+                 for name in layout.regions}
+            )
+        else:
+            # Semantic conditioner replaces learned modality embeddings
+            self.modality_embeddings = None
 
     def create_empty(self, batch_size: int) -> torch.Tensor:
-        """(B, N, d_model) canvas filled with empty tokens + positional encoding."""
+        """(B, N, d_model) canvas filled with empty tokens + positional encoding.
+
+        If a semantic conditioner is present, also adds semantic conditioning
+        to all positions so that empty positions carry semantic identity.
+        """
         L = self.layout
         canvas = self.empty_token.unsqueeze(0).unsqueeze(0).expand(batch_size, L.num_positions, L.d_model).clone()
         pe = self.pos_enc(L.T, L.H, L.W).reshape(1, L.num_positions, L.d_model)
-        return canvas + pe
+        canvas = canvas + pe
+
+        if self.semantic_conditioner is not None:
+            canvas = self.semantic_conditioner.condition_canvas(canvas, L)
+
+        return canvas
 
     def place(self, canvas: torch.Tensor, embeddings: torch.Tensor, region_name: str) -> torch.Tensor:
-        """Write embeddings into a named region, adding modality embedding."""
+        """Write embeddings into a named region, adding modality/semantic embedding."""
         indices = self.layout.region_indices(region_name)
         n = len(indices)
         if embeddings.shape[1] > n:
@@ -345,10 +373,21 @@ class SpatiotemporalCanvas(nn.Module):
             pad = torch.zeros(embeddings.shape[0], n - embeddings.shape[1], self.layout.d_model, device=embeddings.device)
             embeddings = torch.cat([embeddings, pad], dim=1)
         idx = torch.tensor(indices, device=canvas.device, dtype=torch.long)
-        key = self._key_map.get(region_name, self._sanitize_key(region_name))
-        mod_emb = self.modality_embeddings[key] if key in self.modality_embeddings else 0
+
+        # Add region identity: semantic conditioning or learned modality embedding
+        if self.semantic_conditioner is not None:
+            if region_name in self.semantic_conditioner._name_to_idx:
+                region_emb = self.semantic_conditioner.get_conditioning(region_name).to(canvas.device)
+            else:
+                region_emb = 0
+        elif self.modality_embeddings is not None:
+            key = self._key_map.get(region_name, self._sanitize_key(region_name))
+            region_emb = self.modality_embeddings[key] if key in self.modality_embeddings else 0
+        else:
+            region_emb = 0
+
         canvas = canvas.clone()
-        canvas[:, idx] = embeddings + mod_emb
+        canvas[:, idx] = embeddings + region_emb
         return canvas
 
     def extract(self, canvas: torch.Tensor, region_name: str) -> torch.Tensor:
