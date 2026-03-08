@@ -86,7 +86,7 @@ class Complex:
 
 bound_structured = compile_schema(
     Complex(chains=[Chain(), Chain(), Chain(), Chain()]),
-    T=1, H=24, W=24, d_model=48,
+    T=1, H=16, W=16, d_model=48,
     connectivity=ConnectivityPolicy(
         intra="dense",
         parent_child="hub_spoke",
@@ -98,12 +98,12 @@ bound_structured = compile_schema(
 # Flat: everything in one big region (no chain separation)
 @dataclass
 class FlatComplex:
-    all_residues: Field = Field(10, 10)
-    structure: Field = Field(4, 4)
+    all_residues: Field = Field(8, 8)
+    structure: Field = Field(4, 2)
     affinity: Field = Field(1, 1, loss_weight=5.0)
 
 bound_flat = compile_schema(
-    FlatComplex(), T=1, H=24, W=24, d_model=48,
+    FlatComplex(), T=1, H=16, W=16, d_model=48,
     connectivity=ConnectivityPolicy(intra="dense"),
 )
 
@@ -596,36 +596,39 @@ ax.axis('off')
 
 # ── (0,1) Contact map heatmap ────────────────────────────────────────
 ax = fig.add_subplot(gs[0, 1])
-style_ax(ax, 'RESIDUE CONTACT MAP', 'chain pair index', 'binding residue')
+style_ax(ax, 'INTER-CHAIN CONTACT DISTANCE MAP', 'residue (chain j)', 'residue (chain i)')
 
-# Build a composite contact distance matrix for binding region
+# Build full 4-chain pairwise contact distance matrix at binding site
 bind_len = BINDING_END - BINDING_START
-contact_matrix = np.zeros((bind_len * 2, bind_len * 2))
+full_size = bind_len * N_CHAINS
+contact_matrix = np.ones((full_size, full_size)) * np.nan
 
 sample_idx = 0
-for ci, cj in [(0, 2), (1, 2)]:
-    props_i = train_data[f'props_{ci}'][sample_idx].numpy()
-    props_j = train_data[f'props_{cj}'][sample_idx].numpy()
-    dist = np.sqrt(((props_i[:, None] - props_j[None, :]) ** 2).sum(axis=-1))
-    row_off = ci * bind_len if ci < 2 else 0
-    col_off = bind_len
-    r0, r1 = row_off, row_off + bind_len
-    c0, c1 = col_off, col_off + bind_len
-    if r1 <= contact_matrix.shape[0] and c1 <= contact_matrix.shape[1]:
+for ci in range(N_CHAINS):
+    for cj in range(N_CHAINS):
+        props_i = train_data[f'props_{ci}'][sample_idx].numpy()
+        props_j = train_data[f'props_{cj}'][sample_idx].numpy()
+        dist = np.sqrt(((props_i[:, None] - props_j[None, :]) ** 2).sum(axis=-1))
+        r0, r1 = ci * bind_len, (ci + 1) * bind_len
+        c0, c1 = cj * bind_len, (cj + 1) * bind_len
         contact_matrix[r0:r1, c0:c1] = dist
 
-im = ax.imshow(contact_matrix, cmap='inferno', aspect='auto', interpolation='bilinear')
-plt.colorbar(im, ax=ax, shrink=0.7, label='dist', pad=0.02)
-ax.set_xticks([0, bind_len, bind_len*2-1])
-ax.set_xticklabels(['0', str(bind_len), str(bind_len*2)], fontsize=6)
-ax.set_yticks([0, bind_len, bind_len*2-1])
-ax.set_yticklabels(['0', str(bind_len), str(bind_len*2)], fontsize=6)
+im = ax.imshow(contact_matrix, cmap='inferno', aspect='equal', interpolation='bilinear')
+cb = plt.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
+cb.set_label('property distance', fontsize=6, color=TEXT_DIM)
+cb.ax.tick_params(labelsize=5, colors=TEXT_DIM)
 
-# Chain pair labels
-ax.text(bind_len//2, -1.5, 'Heavy', fontsize=6, color=CHAIN_COLORS_HEX[0],
-        ha='center', fontfamily='monospace')
-ax.text(bind_len + bind_len//2, -1.5, 'Antigen', fontsize=6, color=CHAIN_COLORS_HEX[2],
-        ha='center', fontfamily='monospace')
+# Chain boundary lines and labels
+for i in range(1, N_CHAINS):
+    ax.axhline(i * bind_len - 0.5, color=ACCENT_CYAN, lw=0.5, alpha=0.5)
+    ax.axvline(i * bind_len - 0.5, color=ACCENT_CYAN, lw=0.5, alpha=0.5)
+
+for ci, name in enumerate(CHAIN_NAMES):
+    mid = ci * bind_len + bind_len // 2
+    ax.text(mid, -2.5, name[:3].upper(), fontsize=5, color=CHAIN_COLORS_HEX[ci],
+            ha='center', fontfamily='monospace', fontweight='bold')
+    ax.text(-2.5, mid, name[:3].upper(), fontsize=5, color=CHAIN_COLORS_HEX[ci],
+            ha='right', va='center', fontfamily='monospace', fontweight='bold')
 
 
 # ── (0,2) Binding energy landscape (PCA of binding embeddings) ───────
@@ -679,8 +682,8 @@ for ss_type, color in ss_colors_map.items():
     mask = sample_ss.ravel() == ss_type
     phi_flat = phi_proxy.ravel()[mask]
     psi_flat = psi_proxy.ravel()[mask]
-    ax.scatter(phi_flat[:500], psi_flat[:500], s=1, c=color, alpha=0.3,
-               label=ss_labels[ss_type])
+    ax.scatter(phi_flat[:800], psi_flat[:800], s=3, c=color, alpha=0.4,
+               label=ss_labels[ss_type], edgecolors='none')
 
 ax.set_xlim(-200, 200)
 ax.set_ylim(-200, 200)
@@ -732,10 +735,10 @@ with torch.no_grad():
     pred_flat = flat_model(val_data)['affinity'].numpy()
 true_aff = val_data['affinity'].numpy()
 
-ax.scatter(true_aff, pred_flat, s=3, alpha=0.25, color=CHAIN_COLORS_HEX[1],
-           label=f'flat (MSE={flat_val_aff:.3f})', zorder=2)
-ax.scatter(true_aff, pred_struct, s=3, alpha=0.35, color=ACCENT_CYAN,
-           label=f'structured (MSE={struct_val_aff:.3f})', zorder=3)
+ax.scatter(true_aff, pred_flat, s=6, alpha=0.3, color=CHAIN_COLORS_HEX[1],
+           label=f'flat (MSE={flat_val_aff:.3f})', zorder=2, edgecolors='none')
+ax.scatter(true_aff, pred_struct, s=6, alpha=0.4, color=ACCENT_CYAN,
+           label=f'structured (MSE={struct_val_aff:.3f})', zorder=3, edgecolors='none')
 lims = [-1.5, 1.5]
 ax.plot(lims, lims, '--', color=TEXT_DIM, lw=1, alpha=0.5)
 ax.set_xlim(lims)
