@@ -2,7 +2,7 @@
 
 Declare structured types whose fields are latent regions. Types compose
 (nesting), specialize (inheritance), and replicate (lists). A compiler
-flattens any type hierarchy into a CanvasSchema — a concrete CanvasLayout +
+flattens any type hierarchy into a CanvasSchema -- a concrete CanvasLayout +
 CanvasTopology ready for the diffusion process.
 
 Works with dataclasses, Pydantic models, or any object with Field attributes.
@@ -34,7 +34,7 @@ from canvas_engineering.connectivity import CanvasTopology, Connection
 from canvas_engineering.schema import CanvasSchema
 
 
-# ── Field Declaration ────────────────────────────────────────────────
+# -- Field Declaration ------------------------------------------------
 
 @dataclass(frozen=True)
 class Field:
@@ -68,7 +68,7 @@ class Field:
         return self.h * self.w
 
 
-# ── Layout Strategy ──────────────────────────────────────────────────
+# -- Layout Strategy --------------------------------------------------
 
 class LayoutStrategy(Enum):
     """How to arrange fields on the (H, W) grid."""
@@ -76,21 +76,22 @@ class LayoutStrategy(Enum):
     INTERLEAVED = "interleaved"
 
 
-# ── Connectivity Policy ──────────────────────────────────────────────
+# -- Connectivity Policy ----------------------------------------------
 
 @dataclass
 class ConnectivityPolicy:
     """Default connectivity rules for compiled schemas.
 
-    Every nested type and array element automatically gets a coarse-grained field
+    Every nested type and array element automatically gets a coarse-grained
     field at its own path. Parent fields connect bidirectionally to the
-    coarse-grained field; the coarse-grained field connects bidirectionally to child fields.
+    coarse-grained field; the coarse-grained field connects bidirectionally
+    to child fields.
 
     Coarse-grained field size is configured on the types themselves:
       - Set ``__coarse__ = Field(h, w)`` on a class to define its
         default coarse-grained field size when it appears as a child anywhere.
       - Set ``metadata={"coarse": Field(h, w)}`` on a dataclass field
-        to override the coarse-grained field for that specific parent→child edge.
+        to override the coarse-grained field for that specific parent->child edge.
       - Falls back to Field(1, 1) if neither is set.
 
     Args:
@@ -106,7 +107,7 @@ class ConnectivityPolicy:
     temporal: str = "dense"
 
 
-# ── Tree Walking (Internal) ──────────────────────────────────────────
+# -- Tree Walking (Internal) ------------------------------------------
 
 @dataclass
 class _FieldEntry:
@@ -167,7 +168,7 @@ def _has_canvas_fields(obj: Any) -> bool:
 
 
 def _resolve_coarse_field(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
-    """Determine coarse-grained field Field for a child.
+    """Determine the coarse-grained Field for a child.
 
     Priority:
       1. Parent's dataclass field metadata: ``metadata={"coarse": Field(...)}``
@@ -249,7 +250,7 @@ def _flatten_fields(node: _TypeNode) -> List[Tuple[str, Field, str]]:
     return result
 
 
-# ── Gateway Insertion (Internal) ──────────────────────────────────────
+# -- Coarse Field Insertion (Internal) --------------------------------
 
 def _median_period_from_tree(node: _TypeNode) -> int:
     """Get median period from all Fields in a subtree."""
@@ -292,8 +293,8 @@ def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
     Coarse-grained field params come from the child's ``coarse_field`` (resolved
     during _walk from ``__coarse__`` class attrs and field metadata).
 
-    Before: Parent → [Child1(fields...), Child2(fields...)]
-    After:  Parent → [GW1(coarse-grained field) → Child1(fields...), GW2(coarse-grained field) → Child2(fields...)]
+    Before: Parent -> [Child1(fields...), Child2(fields...)]
+    After:  Parent -> [CG1(coarse) -> Child1(fields...), CG2(coarse) -> Child2(fields...)]
 
     Returns the modified node (in-place).
     """
@@ -362,7 +363,7 @@ def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
     return node
 
 
-# ── Auto-sizing (Internal) ──────────────────────────────────────────
+# -- Auto-sizing (Internal) -------------------------------------------
 
 def _auto_canvas_size(
     fields: List[Tuple[str, int, int]],
@@ -408,7 +409,7 @@ def _auto_canvas_size(
     return (H, W)
 
 
-# ── Packing (Internal) ───────────────────────────────────────────────
+# -- Packing (Internal) -----------------------------------------------
 
 def _pack_strip(
     fields: List[Tuple[str, int, int]],
@@ -468,7 +469,7 @@ def _pack_interleaved(
     return _pack_strip(ordered, H, W)
 
 
-# ── Connectivity Generation (Internal) ───────────────────────────────
+# -- Connectivity Generation (Internal) -------------------------------
 
 def _intra_connections(node: _TypeNode, policy: ConnectivityPolicy) -> List[Connection]:
     """Connect fields within a single type instance."""
@@ -507,9 +508,10 @@ def _parent_child_connections(
 ) -> List[Connection]:
     """Connect parent fields to child fields (bidirectional).
 
-    With coarse-grained field insertion, this is always called between a parent node
-    and a coarse-grained field node (or coarse-grained field node and its child). The coarse-grained field
-    provides the bottleneck — no policy dispatch needed.
+    With coarse-grained field insertion, this is always called between a
+    parent node and a coarse-grained node (or coarse-grained node and its
+    child). The coarse-grained field provides the bottleneck -- no policy
+    dispatch needed.
     """
     conns = []
     for pf in parent.fields:
@@ -627,7 +629,7 @@ def _deduplicate(connections: List[Connection]) -> List[Connection]:
     return result
 
 
-# ── Bound Schema ─────────────────────────────────────────────────────
+# -- Bound Schema -----------------------------------------------------
 
 class BoundField:
     """A Field bound to a compiled canvas region.
@@ -751,7 +753,7 @@ class BoundSchema:
         embedding function, then creates a SemanticConditioner.
 
         Args:
-            embed_fn: Callable taking list[str] → list[list[float]].
+            embed_fn: Callable taking list[str] -> list[list[float]].
                 Each string is a semantic type description.
             embed_dim: Dimension of the embeddings returned by embed_fn.
             freeze_embeddings: If True, freeze the raw embeddings.
@@ -806,7 +808,7 @@ class BoundSchema:
             len(self._fields), self.layout.num_positions)
 
 
-# ── Compilation ──────────────────────────────────────────────────────
+# -- Compilation ------------------------------------------------------
 
 def compile_schema(
     root: Any,
@@ -827,9 +829,9 @@ def compile_schema(
     Works with dataclasses, Pydantic models, or plain objects.
 
     When H and/or W are None, they are auto-computed from the declared field
-    dimensions — like a C compiler sizing a struct from its members.
+    dimensions -- like a C compiler sizing a struct from its members.
 
-    Every nested type and array element automatically gets a coarse-grained field
+    Every nested type and array element automatically gets a coarse-grained
     field at its own path. Coarse-grained field size is configured on the types:
       - ``__coarse__ = Field(h, w)`` on the child class
       - ``metadata={"coarse": Field(h, w)}`` on the parent's field
