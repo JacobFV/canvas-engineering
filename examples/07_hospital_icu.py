@@ -179,7 +179,7 @@ ward = ICUWard(
 )
 
 bound = compile_schema(
-    ward, T=1, H=32, W=32, d_model=32,
+    ward, T=1, H=24, W=24, d_model=32,
     connectivity=ConnectivityPolicy(
         intra="dense",
         parent_child="hub_spoke",
@@ -553,7 +553,7 @@ class ICUWardModel(nn.Module):
         layer = nn.TransformerEncoderLayer(
             d_model=d, nhead=nhead, dim_feedforward=128,
             dropout=0.0, batch_first=True)
-        self.encoder = nn.TransformerEncoder(layer, num_layers=3)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=2)
         mask = bound.topology.to_additive_mask(bound.layout)
         self.register_buffer('mask', mask)
 
@@ -727,7 +727,7 @@ def causal_consistency_loss(data, out):
     return consist
 
 
-def train_ward(model, label, use_consistency=False, n_epochs=250, bs=128):
+def train_ward(model, label, use_consistency=False, n_epochs=200, bs=64):
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, n_epochs)
     losses = []
@@ -1341,7 +1341,7 @@ ax.legend(fontsize=5, loc='upper left', facecolor=BG_PANEL, edgecolor=GRID_COLOR
 
 # ── (3,1) Canvas Layout Grid ─────────────────────────────────────────
 ax = fig.add_subplot(gs[3, 1])
-style_ax(ax, 'CANVAS LAYOUT (32x32)')
+style_ax(ax, f'CANVAS LAYOUT ({bound.layout.H}x{bound.layout.W})')
 
 H, W = bound.layout.H, bound.layout.W
 grid = np.ones((H, W, 3)) * np.array([10, 10, 26]) / 255.0  # dark bg
