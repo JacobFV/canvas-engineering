@@ -20,6 +20,20 @@ from canvas_engineering.action_heads import ActionHead
 from canvas_engineering.sharpening import SharpeningSchedule
 from canvas_engineering.connectivity import Connection, CanvasTopology
 from canvas_engineering.schema import CanvasSchema
+from canvas_engineering.attention import (
+    ATTENTION_REGISTRY,
+    create_attention,
+    register_attention,
+    CrossAttention,
+    LinearAttention,
+    GatedAttention,
+    PoolingAttention,
+    CopyAttention,
+    NoneAttention,
+    PerceiverAttention,
+    SparseAttention,
+)
+from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
     BoundField, BoundSchema, compile_schema,
@@ -30,7 +44,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -56,4 +70,16 @@ __all__ = [
     "SemanticConditioner",
     "auto_semantic_type",
     "compute_semantic_embeddings",
+    "ATTENTION_REGISTRY",
+    "create_attention",
+    "register_attention",
+    "CrossAttention",
+    "LinearAttention",
+    "GatedAttention",
+    "PoolingAttention",
+    "CopyAttention",
+    "NoneAttention",
+    "PerceiverAttention",
+    "SparseAttention",
+    "AttentionDispatcher",
 ]

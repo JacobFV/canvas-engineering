@@ -174,6 +174,11 @@ class CanvasTopology:
             1. connection.fn if explicitly set
             2. layout.region_spec(connection.src).default_attn if layout provided
             3. "cross_attention" (global default)
+
+        The resolved fn string is dispatched by AttentionDispatcher
+        (see canvas_engineering.dispatch) using ATTENTION_REGISTRY
+        (see canvas_engineering.attention). Each fn maps to an nn.Module
+        with forward(queries, keys, values) -> output.
         """
         if connection.fn is not None:
             return connection.fn
