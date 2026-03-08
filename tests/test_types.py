@@ -974,3 +974,45 @@ class TestBottleneck:
         gw = bound["sensor"]
         assert "gateway" in gw.spec.semantic_type
         assert "sensor" in gw.spec.semantic_type
+
+    def test_custom_gateway_size_default(self):
+        """gateway_size sets the default for all gateways."""
+        bound = compile_schema(
+            Robot(), T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(
+                parent_child="bottleneck",
+                gateway_size=(2, 4),
+            ),
+        )
+        gw = bound["sensor"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 2 and (w1 - w0) == 4
+
+    def test_custom_gateway_size_per_child(self):
+        """gateway_sizes overrides specific children by local name."""
+        company = Company(
+            employees=[Employee(), Employee()],
+            products=[Product()],
+        )
+        bound = compile_schema(
+            company, T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(
+                parent_child="bottleneck",
+                gateway_size=(1, 1),
+                gateway_sizes={"employees": (4, 4)},
+            ),
+        )
+        # Employee gateways should be 4×4
+        gw0 = bound["employees[0]"]
+        t0, t1, h0, h1, w0, w1 = gw0.spec.bounds
+        assert (h1 - h0) == 4 and (w1 - w0) == 4
+
+        # Product gateway should use default 1×1
+        gw_prod = bound["products[0]"]
+        t0, t1, h0, h1, w0, w1 = gw_prod.spec.bounds
+        assert (h1 - h0) == 1 and (w1 - w0) == 1
+
+    def test_t_defaults_to_1(self):
+        """T should default to 1 when not specified."""
+        bound = compile_schema(SimpleType(), H=8, W=8, d_model=64)
+        assert bound.layout.T == 1
