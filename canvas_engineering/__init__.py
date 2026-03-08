@@ -30,8 +30,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.1.1"
-# TODO: Bump to 0.2.0 before deploying general-unified-world-model 0.0.3
+__version__ = "0.1.2"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
