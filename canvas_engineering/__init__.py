@@ -26,12 +26,20 @@ from canvas_engineering.attention import (
     register_attention,
     CrossAttention,
     LinearAttention,
+    CosineAttention,
+    SigmoidAttention,
     GatedAttention,
     PoolingAttention,
     CopyAttention,
     NoneAttention,
     PerceiverAttention,
     SparseAttention,
+    LocalAttention,
+    RandomFixedAttention,
+    MixtureAttention,
+    MambaAttention,
+    RWKVAttention,
+    HyenaAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.types import (
@@ -44,7 +52,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -79,7 +87,15 @@ __all__ = [
     "PoolingAttention",
     "CopyAttention",
     "NoneAttention",
+    "CosineAttention",
+    "SigmoidAttention",
     "PerceiverAttention",
     "SparseAttention",
+    "LocalAttention",
+    "RandomFixedAttention",
+    "MixtureAttention",
+    "MambaAttention",
+    "RWKVAttention",
+    "HyenaAttention",
     "AttentionDispatcher",
 ]
