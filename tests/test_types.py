@@ -10,6 +10,7 @@ from canvas_engineering.types import (
     _walk, _flatten_fields, _pack_strip, _pack_interleaved,
     _intra_connections, _parent_child_connections, _array_element_connections,
     _generate_connections, _apply_temporal, _deduplicate,
+    _insert_gateways, _auto_canvas_size,
 )
 from canvas_engineering.canvas import SpatiotemporalCanvas
 from canvas_engineering.connectivity import Connection
@@ -773,3 +774,203 @@ class TestPlainClass:
         bound = compile_schema(Outer(), T=4, H=8, W=8, d_model=128)
         assert "inner.a" in bound
         assert "b" in bound
+
+
+# ── Auto-sizing tests ───────────────────────────────────────────────
+
+class TestAutoSizing:
+    def test_auto_size_simple(self):
+        """Auto-sizing should produce a canvas that fits all fields."""
+        bound = compile_schema(SimpleType(), T=4, d_model=64)
+        # Should succeed (H, W auto-computed)
+        assert "x" in bound
+        assert "y" in bound
+
+    def test_auto_size_nested(self):
+        """Auto-sizing with nested types."""
+        bound = compile_schema(Robot(), T=4, d_model=64)
+        assert "sensor.camera" in bound
+        assert "plan" in bound
+        assert "action" in bound
+
+    def test_auto_size_company(self):
+        """Auto-sizing with arrays."""
+        company = Company(
+            employees=[Employee(), Employee()],
+            products=[Product()],
+        )
+        bound = compile_schema(company, T=1, d_model=64)
+        assert "employees[0].thought" in bound
+        assert "products[0].description" in bound
+
+    def test_auto_size_matches_manual(self):
+        """Auto-sized H, W should be >= what the fields need."""
+        fields = [(p, f.h, f.w) for p, f, _ in _flatten_fields(_walk(SimpleType()))]
+        H, W = _auto_canvas_size(fields)
+        # Should be able to pack with the computed size
+        _pack_strip(fields, H, W)  # should not raise
+
+    def test_auto_size_only_h(self):
+        """Can auto-size H while specifying W."""
+        bound = compile_schema(SimpleType(), T=4, W=8, d_model=64)
+        assert bound.layout.W == 8
+
+    def test_auto_size_only_w(self):
+        """Can auto-size W while specifying H."""
+        bound = compile_schema(SimpleType(), T=4, H=8, d_model=64)
+        assert bound.layout.H == 8
+
+    def test_auto_size_empty_returns_minimum(self):
+        """Empty field list should return minimum canvas."""
+        H, W = _auto_canvas_size([])
+        assert H >= 4 and W >= 4
+
+
+# ── Bottleneck / gateway tests ──────────────────────────────────────
+
+class TestBottleneck:
+    def test_gateway_created_for_nested_type(self):
+        """Bottleneck should create a gateway field at the child's path."""
+        bound = compile_schema(
+            Robot(), T=4, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        # Robot has nested Sensor — should get a gateway at "sensor"
+        assert "sensor" in bound
+        # Original fields should still exist
+        assert "sensor.camera" in bound
+        assert "sensor.depth" in bound
+        assert "plan" in bound
+        assert "action" in bound
+
+    def test_gateway_is_1x1(self):
+        """Gateway fields should be 1×1."""
+        bound = compile_schema(
+            Robot(), T=4, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        gw = bound["sensor"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 1 and (w1 - w0) == 1
+
+    def test_gateway_connectivity(self):
+        """Gateway should connect to both parent and child fields."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        conns = bound.topology.connections
+        # Gateway "sensor" should connect to parent fields ("plan", "action")
+        gw_to_parent = [c for c in conns
+                        if (c.src == "sensor" and c.dst in ("plan", "action"))
+                        or (c.dst == "sensor" and c.src in ("plan", "action"))]
+        assert len(gw_to_parent) > 0
+
+        # Gateway "sensor" should connect to child fields ("sensor.camera", "sensor.depth")
+        gw_to_child = [c for c in conns
+                       if (c.src == "sensor" and c.dst in ("sensor.camera", "sensor.depth"))
+                       or (c.dst == "sensor" and c.src in ("sensor.camera", "sensor.depth"))]
+        assert len(gw_to_child) > 0
+
+    def test_no_direct_parent_child_connections(self):
+        """With bottleneck, parent fields should NOT connect directly to child fields."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        conns = bound.topology.connections
+        # "plan" should NOT connect directly to "sensor.camera"
+        direct = [c for c in conns
+                  if (c.src == "plan" and c.dst == "sensor.camera")
+                  or (c.src == "sensor.camera" and c.dst == "plan")]
+        assert len(direct) == 0
+
+    def test_gateway_for_array_elements(self):
+        """Each array element should get its own gateway."""
+        company = Company(
+            employees=[Employee(), Employee(), Employee()],
+        )
+        bound = compile_schema(
+            company, T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        # Each employee should have a gateway at "employees[i]"
+        assert "employees[0]" in bound
+        assert "employees[1]" in bound
+        assert "employees[2]" in bound
+        # Original fields should still exist
+        assert "employees[0].thought" in bound
+        assert "employees[1].goal" in bound
+
+    def test_no_cross_element_direct_connections(self):
+        """Array elements should interact through gateways, not directly."""
+        company = Company(
+            employees=[Employee(), Employee()],
+        )
+        bound = compile_schema(
+            company, T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(
+                parent_child="bottleneck",
+                array_element="isolated",
+            ),
+        )
+        conns = bound.topology.connections
+        # employees[0].thought should NOT connect to employees[1].thought
+        cross = [c for c in conns
+                 if "employees[0]." in c.src and "employees[1]." in c.dst]
+        assert len(cross) == 0
+
+    def test_hierarchical_gateways(self):
+        """Deep nesting should create gateways at each level."""
+        @dataclass
+        class Inner:
+            x: Field = Field(2, 2)
+
+        @dataclass
+        class Middle:
+            inner: Inner = dc_field(default_factory=Inner)
+            y: Field = Field(1, 2)
+
+        @dataclass
+        class Outer:
+            middle: Middle = dc_field(default_factory=Middle)
+            z: Field = Field(1, 2)
+
+        bound = compile_schema(
+            Outer(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        # Gateway for Middle
+        assert "middle" in bound
+        # Gateway for Inner (inside Middle's subtree)
+        assert "middle.inner" in bound
+        # Original fields
+        assert "middle.inner.x" in bound
+        assert "middle.y" in bound
+        assert "z" in bound
+
+    def test_bottleneck_with_auto_sizing(self):
+        """Bottleneck + auto-sizing should work together."""
+        company = Company(
+            employees=[Employee(), Employee()],
+            products=[Product()],
+        )
+        bound = compile_schema(
+            company, T=1, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        # Should have gateways and be auto-sized
+        assert "employees[0]" in bound
+        assert "products[0]" in bound
+        assert bound.layout.H > 0
+        assert bound.layout.W > 0
+
+    def test_gateway_semantic_type(self):
+        """Gateway fields should have descriptive semantic types."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(parent_child="bottleneck"),
+        )
+        gw = bound["sensor"]
+        assert "gateway" in gw.spec.semantic_type
+        assert "sensor" in gw.spec.semantic_type

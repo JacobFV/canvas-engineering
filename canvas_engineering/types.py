@@ -87,11 +87,16 @@ class ConnectivityPolicy:
             "dense" (default), "isolated", "causal_chain", "star"
         parent_child: How parent fields connect to child fields.
             "matched_fields" (default), "hub_spoke", "broadcast",
-            "aggregate", "none"
+            "aggregate", "bottleneck", "none"
         array_element: How elements of the same list connect.
             "isolated" (default), "dense", "matched_fields", "ring"
         temporal: Temporal constraint policy for all connections.
             "dense" (default), "causal", "same_frame"
+
+    The "bottleneck" parent_child policy auto-generates a 1×1 gateway
+    field for each child/array-element at the child's own path. Parent
+    fields connect to the gateway; the gateway connects to child fields.
+    Cross-level attention is O(1) per entity instead of O(fields²).
     """
     intra: str = "dense"
     parent_child: str = "matched_fields"
@@ -206,6 +211,159 @@ def _flatten_fields(node: _TypeNode) -> List[Tuple[str, Field, str]]:
         for elem in elements:
             result.extend(_flatten_fields(elem))
     return result
+
+
+# ── Gateway Insertion (Internal) ──────────────────────────────────────
+
+def _median_period_from_tree(node: _TypeNode) -> int:
+    """Get median period from all Fields in a subtree."""
+    periods = []
+    for fe in node.fields:
+        periods.append(fe.field.period)
+    for child in node.children:
+        periods.extend(
+            fe.field.period for fe in _flatten_fields_raw(child)
+        )
+    for elems in node.arrays.values():
+        for elem in elems:
+            periods.extend(
+                fe.field.period for fe in _flatten_fields_raw(elem)
+            )
+    if not periods:
+        return 1
+    periods.sort()
+    return periods[len(periods) // 2]
+
+
+def _flatten_fields_raw(node: _TypeNode) -> List[_FieldEntry]:
+    """Flatten to raw _FieldEntry list (for internal use)."""
+    result = list(node.fields)
+    for child in node.children:
+        result.extend(_flatten_fields_raw(child))
+    for elems in node.arrays.values():
+        for elem in elems:
+            result.extend(_flatten_fields_raw(elem))
+    return result
+
+
+def _insert_gateways(node: _TypeNode) -> _TypeNode:
+    """Insert 1×1 gateway fields between parent and each child/array-element.
+
+    For each child node, creates a new intermediate node containing a single
+    1×1 gateway field at the child's path. The original child becomes a
+    grandchild. This forces cross-level attention to bottleneck through the
+    gateway.
+
+    Before: Parent → [Child1(fields...), Child2(fields...)]
+    After:  Parent → [GW1(gateway) → Child1(fields...), GW2(gateway) → Child2(fields...)]
+
+    The gateway field's path is the child's path (e.g. "employees[0]"),
+    which won't conflict with the child's own fields (e.g. "employees[0].thought").
+
+    Returns the modified node (in-place).
+    """
+    # Process children
+    new_children = []
+    for child in node.children:
+        _insert_gateways(child)  # recurse first
+
+        mp = _median_period_from_tree(child)
+        gateway_field = Field(
+            1, 1, period=mp,
+            semantic_type="gateway: {}".format(child.path),
+        )
+        local = child.path.rsplit(".", 1)[-1] if "." in child.path else child.path
+        gateway_entry = _FieldEntry(
+            path=child.path, field=gateway_field, local_name=local,
+        )
+
+        # Wrap child in an intermediate gateway node
+        gateway_node = _TypeNode(
+            path=child.path,
+            fields=[gateway_entry],
+            children=[child],
+            arrays={},
+            parent=node,
+        )
+        child.parent = gateway_node
+        new_children.append(gateway_node)
+    node.children = new_children
+
+    # Process array elements
+    new_arrays = {}
+    for array_name, elements in node.arrays.items():
+        new_elements = []
+        for elem in elements:
+            _insert_gateways(elem)  # recurse first
+
+            mp = _median_period_from_tree(elem)
+            gateway_field = Field(
+                1, 1, period=mp,
+                semantic_type="gateway: {}".format(elem.path),
+            )
+            gateway_entry = _FieldEntry(
+                path=elem.path, field=gateway_field, local_name=array_name,
+            )
+
+            gateway_node = _TypeNode(
+                path=elem.path,
+                fields=[gateway_entry],
+                children=[elem],
+                arrays={},
+                parent=node,
+            )
+            elem.parent = gateway_node
+            new_elements.append(gateway_node)
+        new_arrays[array_name] = new_elements
+    node.arrays = new_arrays
+
+    return node
+
+
+# ── Auto-sizing (Internal) ──────────────────────────────────────────
+
+def _auto_canvas_size(
+    fields: List[Tuple[str, int, int]],
+    pad: float = 1.15,
+) -> Tuple[int, int]:
+    """Compute minimum (H, W) that can pack all fields.
+
+    Uses the same strip-packing algorithm as _pack_strip. Computes the
+    smallest roughly-square grid that fits everything, with a padding factor.
+
+    Args:
+        fields: [(path, h, w), ...] from flattened field list.
+        pad: Padding factor (1.15 = 15% slack).
+
+    Returns:
+        (H, W) tuple.
+    """
+    if not fields:
+        return (4, 4)
+
+    import math
+
+    max_w = max(w for _, _, w in fields)
+    max_h = max(h for _, h, _ in fields)
+    total_area = sum(h * w for _, h, w in fields)
+
+    side = int(math.ceil(math.sqrt(total_area * pad)))
+    W = max(side, max_w)
+
+    # Simulate strip packing to find needed H
+    row_h = 0
+    row_w = 0
+    row_max_h = 0
+    for _, h, w in fields:
+        if row_w + w > W:
+            row_h += row_max_h
+            row_w = 0
+            row_max_h = 0
+        row_w += w
+        row_max_h = max(row_max_h, h)
+    needed_H = row_h + row_max_h
+    H = max(int(math.ceil(needed_H * pad)), max_h)
+    return (H, W)
 
 
 # ── Packing (Internal) ───────────────────────────────────────────────
@@ -335,6 +493,17 @@ def _parent_child_connections(
         for pf in parent.fields:
             for cf in child.fields:
                 conns.append(Connection(src=pf.path, dst=cf.path))
+
+    elif policy.parent_child == "bottleneck":
+        # With gateway insertion, the intermediate gateway node's single
+        # field connects to both parent and child via hub_spoke at each
+        # level. This is handled by the tree transformation in
+        # _insert_gateways; after insertion, use hub_spoke for actual
+        # connectivity generation.
+        for pf in parent.fields:
+            for cf in child.fields:
+                conns.append(Connection(src=pf.path, dst=cf.path))
+                conns.append(Connection(src=cf.path, dst=pf.path))
 
     return conns
 
@@ -631,9 +800,9 @@ class BoundSchema:
 def compile_schema(
     root: Any,
     T: int,
-    H: int,
-    W: int,
-    d_model: int,
+    H: Optional[int] = None,
+    W: Optional[int] = None,
+    d_model: int = 64,
     connectivity: Optional[ConnectivityPolicy] = None,
     layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
     t_current: int = 0,
@@ -646,12 +815,20 @@ def compile_schema(
 
     Works with dataclasses, Pydantic models, or plain objects.
 
+    When H and/or W are None, they are auto-computed from the declared field
+    dimensions — like a C compiler sizing a struct from its members.
+
+    When connectivity.parent_child == "bottleneck", each nested type and
+    array element automatically gets a 1×1 gateway field at its own path.
+    Cross-level attention routes through gateways, making hierarchical
+    interactions O(1) per entity rather than O(fields²).
+
     Args:
         root: Object with Field attributes. Lists create array regions.
         T: Temporal extent of the canvas.
-        H: Height of the canvas grid.
-        W: Width of the canvas grid.
-        d_model: Latent dimensionality per position.
+        H: Height of the canvas grid. None = auto-sized.
+        W: Width of the canvas grid. None = auto-sized.
+        d_model: Latent dimensionality per position. Default 64.
         connectivity: Connectivity policy. Default: dense intra,
             matched_fields parent-child, isolated arrays, dense temporal.
         layout_strategy: "packed" (default) or "interleaved".
@@ -669,6 +846,10 @@ def compile_schema(
             joints: Field = Field(1, 8)
             action: Field = Field(1, 8, loss_weight=2.0)
 
+        # Auto-sized canvas:
+        bound = compile_schema(Robot(), T=8, d_model=256)
+
+        # Explicit canvas:
         bound = compile_schema(Robot(), T=8, H=16, W=16, d_model=256)
     """
     if connectivity is None:
@@ -680,11 +861,24 @@ def compile_schema(
     # 1. Walk the object tree
     tree = _walk(root)
 
+    # 1b. If bottleneck policy, insert gateway fields
+    if connectivity.parent_child == "bottleneck":
+        _insert_gateways(tree)
+
     # 2. Flatten to field list
     flat = _flatten_fields(tree)
 
     if not flat:
         raise ValueError("No Field attributes found in object tree")
+
+    # 2b. Auto-size canvas if H or W not specified
+    if H is None or W is None:
+        pack_dims = [(path, f.h, f.w) for path, f, _ in flat]
+        auto_H, auto_W = _auto_canvas_size(pack_dims)
+        if H is None:
+            H = auto_H
+        if W is None:
+            W = auto_W
 
     # 3. Pack onto grid
     if layout_strategy == LayoutStrategy.INTERLEAVED:
