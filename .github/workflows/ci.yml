@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest --tb=short -q
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python -c "import canvas_engineering; print(canvas_engineering.__version__)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin "v${{ steps.version.outputs.version }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+
+      - name: Install build tools
+        if: steps.tag_check.outputs.exists == 'false'
+        run: pip install build twine
+
+      - name: Build package
+        if: steps.tag_check.outputs.exists == 'false'
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload dist/*
