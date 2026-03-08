@@ -819,14 +819,19 @@ ring_model.eval()
 with torch.no_grad():
     _, all_intents = ring_model(hist_val[:32], ctx_val[:32])
 
-intent_flat = all_intents.reshape(-1, 8).numpy()
+intent_flat = all_intents.reshape(-1, 8).numpy().copy()
+# Replace any inf/nan with 0
+intent_flat = np.nan_to_num(intent_flat, nan=0.0, posinf=0.0, neginf=0.0)
 intent_centered = intent_flat - intent_flat.mean(axis=0)
-# Regularize to avoid SVD issues with near-zero singular values
-intent_centered += np.random.randn(*intent_centered.shape).astype(np.float32) * 1e-6
-U, S, Vt = np.linalg.svd(intent_centered, full_matrices=False)
-pc = intent_centered @ Vt[:2].T
-# Clip to avoid plot issues
-pc = np.clip(pc, -50, 50)
+# Add small noise to avoid degenerate SVD
+intent_centered += np.random.randn(*intent_centered.shape).astype(np.float32) * 1e-4
+cov = intent_centered.T @ intent_centered / len(intent_centered)
+eigvals, eigvecs = np.linalg.eigh(cov)
+# Use top 2 eigenvectors (eigh returns ascending order)
+pc = intent_centered @ eigvecs[:, -2:]
+pc = np.nan_to_num(pc, nan=0.0, posinf=0.0, neginf=0.0)
+pc = np.clip(pc, np.percentile(pc, 1), np.percentile(pc, 99))
+S = np.sqrt(np.abs(eigvals[::-1]))
 
 headings_flat = np.arctan2(
     hist_val[:32, :, 3].numpy().flatten(),
