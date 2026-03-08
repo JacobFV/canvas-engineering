@@ -530,6 +530,110 @@ We tested three cortical-computation hypotheses rigorously. Two are **falsified*
 
 The looping benefit is **weight-sharing regularization** (parameter efficiency, fixed-point convergence, lower variance), not iterative reasoning. The omnimodal capability comes from the **canvas architecture** (multi-encoder/multi-decoder), not from the looping.
 
+## Compositional types and hierarchical coarse-graining
+
+`compile_schema` accepts nested dataclasses, not just flat field lists. Every nested type automatically gets a **coarse-grained field** — a compressed representation at the child's path that bottlenecks cross-level attention. This means a parent with 1000 children doesn't create O(N²) cross-entity connections — interactions route through compact coarse-grained fields.
+
+```python
+from dataclasses import dataclass, field as dc_field
+from canvas_engineering import Field, compile_schema
+
+@dataclass
+class Sensor:
+    __coarse__ = Field(2, 4)          # when viewed from parent: 2×4 region
+    rgb: Field = Field(12, 12)
+    depth: Field = Field(6, 6)
+    lidar: Field = Field(4, 8)
+
+@dataclass
+class Arm:
+    joints: Field = Field(1, 7)
+    force_torque: Field = Field(1, 6)
+    gripper: Field = Field(1, 2, loss_weight=2.0)
+
+@dataclass
+class SurgicalRobot:
+    # Per-child coarse-grained size via metadata
+    sensor: Sensor = dc_field(default_factory=Sensor)
+    left_arm: Arm = dc_field(
+        default_factory=Arm,
+        metadata={"coarse": Field(2, 4)},  # override for this edge
+    )
+    right_arm: Arm = dc_field(default_factory=Arm)
+    safety: Field = Field(2, 4, loss_weight=5.0)
+
+bound = compile_schema(SurgicalRobot(), d_model=256)
+```
+
+The compiled schema has:
+- `sensor` (2×4 coarse-grained field) ↔ `sensor.rgb`, `sensor.depth`, `sensor.lidar`
+- `left_arm` (2×4 override) ↔ `left_arm.joints`, `left_arm.force_torque`, `left_arm.gripper`
+- `right_arm` (1×1 default) ↔ its child fields
+- `safety` connects to all coarse-grained fields (via parent-level intra connections)
+
+Cross-level attention: `safety ↔ sensor (coarse) ↔ sensor.rgb`. The arms don't see each other's internal joint states — only through the parent's `safety` field and their own coarse-grained representations.
+
+### Arrays: fleets, teams, portfolios
+
+Arrays of entities each get their own coarse-grained field. The parent sees only the compact representations:
+
+```python
+@dataclass
+class Vehicle:
+    __coarse__ = Field(4, 4)          # each vehicle → 4×4 summary
+    camera: Field = Field(8, 8)
+    lidar: Field = Field(4, 8)
+    plan: Field = Field(2, 4)
+    action: Field = Field(1, 4, loss_weight=2.0)
+
+@dataclass
+class Fleet:
+    dispatch: Field = Field(4, 4)
+    vehicles: list = dc_field(default_factory=list)
+
+fleet = Fleet(vehicles=[Vehicle() for _ in range(50)])
+bound = compile_schema(fleet, d_model=256)
+# 50 vehicles × (4×4 coarse + 4 internal fields) = manageable
+# dispatch ↔ vehicles[i] (coarse) ↔ vehicles[i].camera, etc.
+# vehicles[0] does NOT directly attend to vehicles[1].camera
+```
+
+Without coarse-graining, 50 vehicles with dense cross-attention is 50² × fields² connections. With coarse-graining, each vehicle interacts through its 4×4 summary — O(50 × 16) instead of O(50² × 100+).
+
+### Hierarchical composition for world models
+
+Deep nesting creates a chain of coarse-grained fields at each level:
+
+```python
+@dataclass
+class MacroEconomy:
+    __coarse__ = Field(2, 4)
+    gdp: Field = Field(1, 2)
+    inflation: Field = Field(1, 2)
+    employment: Field = Field(1, 4)
+    # ... 50+ fields
+
+@dataclass
+class Country:
+    __coarse__ = Field(4, 4)
+    macro: MacroEconomy = dc_field(default_factory=MacroEconomy)
+    politics: Field = Field(2, 8)      # or another nested type
+    demographics: Field = Field(1, 4)
+
+@dataclass
+class World:
+    us: Country = dc_field(default_factory=Country)
+    cn: Country = dc_field(default_factory=Country)
+    regime: Field = Field(4, 4)
+
+bound = compile_schema(World(), d_model=64)
+# regime ↔ us (4×4 coarse) ↔ us.macro (2×4 coarse) ↔ us.macro.gdp
+# us (coarse) ↔ cn (coarse) — countries see each other's summaries
+# us.macro.gdp does NOT directly attend to cn.macro.inflation
+```
+
+The attention path from US GDP to Chinese inflation goes: `us.macro.gdp → us.macro (coarse) → us (coarse) → regime ↔ cn (coarse) → cn.macro (coarse) → cn.macro.inflation`. Each level compresses, so the model learns hierarchical abstractions — not because we told it to, but because the topology forces it.
+
 ## Examples
 
 ```

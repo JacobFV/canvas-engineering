@@ -82,15 +82,15 @@ class LayoutStrategy(Enum):
 class ConnectivityPolicy:
     """Default connectivity rules for compiled schemas.
 
-    Every nested type and array element automatically gets a gateway
+    Every nested type and array element automatically gets a coarse-grained field
     field at its own path. Parent fields connect bidirectionally to the
-    gateway; the gateway connects bidirectionally to child fields.
+    coarse-grained field; the coarse-grained field connects bidirectionally to child fields.
 
-    Gateway size is configured on the types themselves:
-      - Set ``__gateway__ = Field(h, w)`` on a class to define its
-        default gateway size when it appears as a child anywhere.
-      - Set ``metadata={"gateway": Field(h, w)}`` on a dataclass field
-        to override the gateway for that specific parent→child edge.
+    Coarse-grained field size is configured on the types themselves:
+      - Set ``__coarse__ = Field(h, w)`` on a class to define its
+        default coarse-grained field size when it appears as a child anywhere.
+      - Set ``metadata={"coarse": Field(h, w)}`` on a dataclass field
+        to override the coarse-grained field for that specific parent→child edge.
       - Falls back to Field(1, 1) if neither is set.
 
     Args:
@@ -124,7 +124,7 @@ class _TypeNode:
     children: List['_TypeNode']
     arrays: Dict[str, List['_TypeNode']]
     parent: Optional['_TypeNode']
-    gateway_field: Optional[Field] = None  # resolved gateway config for this node
+    coarse_field: Optional[Field] = None  # resolved coarse-grained field config for this node
 
 
 _SKIP_TYPES = (int, float, str, bool, type(None), bytes, torch.Tensor, Field)
@@ -166,12 +166,12 @@ def _has_canvas_fields(obj: Any) -> bool:
     return False
 
 
-def _resolve_gateway(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
-    """Determine gateway Field for a child.
+def _resolve_coarse_field(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
+    """Determine coarse-grained field Field for a child.
 
     Priority:
-      1. Parent's dataclass field metadata: ``metadata={"gateway": Field(...)}``
-      2. Child type's ``__gateway__`` class attribute
+      1. Parent's dataclass field metadata: ``metadata={"coarse": Field(...)}``
+      2. Child type's ``__coarse__`` class attribute
       3. Default: ``Field(1, 1)``
     """
     # 1. Parent field metadata override
@@ -179,14 +179,14 @@ def _resolve_gateway(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
         dc_fields = parent_obj.__dataclass_fields__
         if attr_name in dc_fields:
             meta = dc_fields[attr_name].metadata
-            if meta and "gateway" in meta:
-                gw = meta["gateway"]
+            if meta and "coarse" in meta:
+                gw = meta["coarse"]
                 if isinstance(gw, Field):
                     return gw
 
-    # 2. Child type's __gateway__
+    # 2. Child type's __coarse__
     child_type = type(child_obj)
-    type_gw = getattr(child_type, '__gateway__', None)
+    type_gw = getattr(child_type, '__coarse__', None)
     if isinstance(type_gw, Field):
         return type_gw
 
@@ -221,7 +221,7 @@ def _walk(obj: Any, path: str = "", local_name: str = "",
                     elem_path = "{}[{}]".format(child_path, i)
                     elem_node = _walk(item, elem_path, attr_name,
                                       parent=node, parent_obj=obj)
-                    elem_node.gateway_field = _resolve_gateway(item, obj, attr_name)
+                    elem_node.coarse_field = _resolve_coarse_field(item, obj, attr_name)
                     elements.append(elem_node)
             if elements:
                 node.arrays[attr_name] = elements
@@ -230,7 +230,7 @@ def _walk(obj: Any, path: str = "", local_name: str = "",
             if _has_canvas_fields(value):
                 child_node = _walk(value, child_path, attr_name,
                                    parent=node, parent_obj=obj)
-                child_node.gateway_field = _resolve_gateway(value, obj, attr_name)
+                child_node.coarse_field = _resolve_coarse_field(value, obj, attr_name)
                 node.children.append(child_node)
 
     return node
@@ -282,49 +282,49 @@ def _flatten_fields_raw(node: _TypeNode) -> List[_FieldEntry]:
     return result
 
 
-def _insert_gateways(node: _TypeNode) -> _TypeNode:
-    """Insert gateway fields between parent and each child/array-element.
+def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
+    """Insert coarse-grained fields between parent and each child/array-element.
 
     For each child node, creates a new intermediate node containing a
-    gateway field at the child's path. The original child becomes a
-    grandchild. Cross-level attention bottlenecks through the gateway.
+    coarse-grained field at the child's path. The original child becomes a
+    grandchild. Cross-level attention bottlenecks through the coarse-grained field.
 
-    Gateway params come from the child's ``gateway_field`` (resolved
-    during _walk from ``__gateway__`` class attrs and field metadata).
+    Coarse-grained field params come from the child's ``coarse_field`` (resolved
+    during _walk from ``__coarse__`` class attrs and field metadata).
 
     Before: Parent → [Child1(fields...), Child2(fields...)]
-    After:  Parent → [GW1(gateway) → Child1(fields...), GW2(gateway) → Child2(fields...)]
+    After:  Parent → [GW1(coarse-grained field) → Child1(fields...), GW2(coarse-grained field) → Child2(fields...)]
 
     Returns the modified node (in-place).
     """
     # Process children
     new_children = []
     for child in node.children:
-        _insert_gateways(child)  # recurse first
+        _insert_coarse_fields(child)  # recurse first
 
         local = child.path.rsplit(".", 1)[-1] if "." in child.path else child.path
-        gw_template = child.gateway_field or Field(1, 1)
+        cg_template = child.coarse_field or Field(1, 1)
         mp = _median_period_from_tree(child)
-        gateway_field = Field(
-            gw_template.h, gw_template.w, period=mp,
-            semantic_type=gw_template.semantic_type or "gateway: {}".format(child.path),
-            is_output=gw_template.is_output,
-            loss_weight=gw_template.loss_weight,
-            attn=gw_template.attn,
+        coarse_field = Field(
+            cg_template.h, cg_template.w, period=mp,
+            semantic_type=cg_template.semantic_type or "coarse: {}".format(child.path),
+            is_output=cg_template.is_output,
+            loss_weight=cg_template.loss_weight,
+            attn=cg_template.attn,
         )
-        gateway_entry = _FieldEntry(
-            path=child.path, field=gateway_field, local_name=local,
+        coarse_entry = _FieldEntry(
+            path=child.path, field=coarse_field, local_name=local,
         )
 
-        gateway_node = _TypeNode(
+        coarse_node = _TypeNode(
             path=child.path,
-            fields=[gateway_entry],
+            fields=[coarse_entry],
             children=[child],
             arrays={},
             parent=node,
         )
-        child.parent = gateway_node
-        new_children.append(gateway_node)
+        child.parent = coarse_node
+        new_children.append(coarse_node)
     node.children = new_children
 
     # Process array elements
@@ -332,30 +332,30 @@ def _insert_gateways(node: _TypeNode) -> _TypeNode:
     for array_name, elements in node.arrays.items():
         new_elements = []
         for elem in elements:
-            _insert_gateways(elem)  # recurse first
+            _insert_coarse_fields(elem)  # recurse first
 
-            gw_template = elem.gateway_field or Field(1, 1)
+            cg_template = elem.coarse_field or Field(1, 1)
             mp = _median_period_from_tree(elem)
-            gateway_field = Field(
-                gw_template.h, gw_template.w, period=mp,
-                semantic_type=gw_template.semantic_type or "gateway: {}".format(elem.path),
-                is_output=gw_template.is_output,
-                loss_weight=gw_template.loss_weight,
-                attn=gw_template.attn,
+            coarse_field = Field(
+                cg_template.h, cg_template.w, period=mp,
+                semantic_type=cg_template.semantic_type or "coarse: {}".format(elem.path),
+                is_output=cg_template.is_output,
+                loss_weight=cg_template.loss_weight,
+                attn=cg_template.attn,
             )
-            gateway_entry = _FieldEntry(
-                path=elem.path, field=gateway_field, local_name=array_name,
+            coarse_entry = _FieldEntry(
+                path=elem.path, field=coarse_field, local_name=array_name,
             )
 
-            gateway_node = _TypeNode(
+            coarse_node = _TypeNode(
                 path=elem.path,
-                fields=[gateway_entry],
+                fields=[coarse_entry],
                 children=[elem],
                 arrays={},
                 parent=node,
             )
-            elem.parent = gateway_node
-            new_elements.append(gateway_node)
+            elem.parent = coarse_node
+            new_elements.append(coarse_node)
         new_arrays[array_name] = new_elements
     node.arrays = new_arrays
 
@@ -507,8 +507,8 @@ def _parent_child_connections(
 ) -> List[Connection]:
     """Connect parent fields to child fields (bidirectional).
 
-    With gateway insertion, this is always called between a parent node
-    and a gateway node (or gateway node and its child). The gateway
+    With coarse-grained field insertion, this is always called between a parent node
+    and a coarse-grained field node (or coarse-grained field node and its child). The coarse-grained field
     provides the bottleneck — no policy dispatch needed.
     """
     conns = []
@@ -829,10 +829,10 @@ def compile_schema(
     When H and/or W are None, they are auto-computed from the declared field
     dimensions — like a C compiler sizing a struct from its members.
 
-    Every nested type and array element automatically gets a gateway
-    field at its own path. Gateway size is configured on the types:
-      - ``__gateway__ = Field(h, w)`` on the child class
-      - ``metadata={"gateway": Field(h, w)}`` on the parent's field
+    Every nested type and array element automatically gets a coarse-grained field
+    field at its own path. Coarse-grained field size is configured on the types:
+      - ``__coarse__ = Field(h, w)`` on the child class
+      - ``metadata={"coarse": Field(h, w)}`` on the parent's field
       - Falls back to Field(1, 1)
 
     Args:
@@ -873,8 +873,8 @@ def compile_schema(
     # 1. Walk the object tree
     tree = _walk(root)
 
-    # 1b. Insert gateway fields for all nested types
-    _insert_gateways(tree)
+    # 1b. Insert coarse-grained fields for all nested types
+    _insert_coarse_fields(tree)
 
     # 2. Flatten to field list
     flat = _flatten_fields(tree)
