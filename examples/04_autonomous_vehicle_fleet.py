@@ -819,31 +819,45 @@ ring_model.eval()
 with torch.no_grad():
     _, all_intents = ring_model(hist_val[:32], ctx_val[:32])
 
-intent_flat = all_intents.reshape(-1, 8).numpy().copy()
-# Replace any inf/nan with 0
-intent_flat = np.nan_to_num(intent_flat, nan=0.0, posinf=0.0, neginf=0.0)
-intent_centered = intent_flat - intent_flat.mean(axis=0)
-# Add small noise to avoid degenerate SVD
-intent_centered += np.random.randn(*intent_centered.shape).astype(np.float32) * 1e-4
-cov = intent_centered.T @ intent_centered / len(intent_centered)
-eigvals, eigvecs = np.linalg.eigh(cov)
-# Use top 2 eigenvectors (eigh returns ascending order)
-pc = intent_centered @ eigvecs[:, -2:]
-pc = np.nan_to_num(pc, nan=0.0, posinf=0.0, neginf=0.0)
-pc = np.clip(pc, np.percentile(pc, 1), np.percentile(pc, 99))
-S = np.sqrt(np.abs(eigvals[::-1]))
-
+# Compute heading colors first
 headings_flat = np.arctan2(
     hist_val[:32, :, 3].numpy().flatten(),
     hist_val[:32, :, 2].numpy().flatten())
-headings_norm = (headings_flat + np.pi) / (2 * np.pi)
+headings_norm_pca = (headings_flat + np.pi) / (2 * np.pi)
 
-sc = ax.scatter(pc[:, 0], pc[:, 1], c=headings_norm, cmap='hsv',
+# PCA on intent vectors (robust to numerical issues from transformer masking)
+import warnings
+_orig_filters = warnings.filters[:]
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+intent_flat = all_intents.reshape(-1, 8).float().numpy().copy()
+intent_flat = np.clip(intent_flat, -100, 100)
+intent_flat = np.nan_to_num(intent_flat, nan=0.0, posinf=0.0, neginf=0.0)
+intent_centered = intent_flat - intent_flat.mean(axis=0)
+rng_pca = np.random.RandomState(42)
+intent_centered = intent_centered + rng_pca.randn(*intent_centered.shape).astype(np.float32) * 0.01
+intent_centered = np.nan_to_num(intent_centered, nan=0.0, posinf=0.0, neginf=0.0)
+cov = (intent_centered.T @ intent_centered) / len(intent_centered)
+cov = np.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0) + np.eye(8) * 1e-6
+eigvals, eigvecs = np.linalg.eigh(cov)
+pc = intent_centered @ eigvecs[:, -2:]
+pc = np.nan_to_num(pc, nan=0.0, posinf=0.0, neginf=0.0)
+valid_mask = np.isfinite(pc).all(axis=1)
+pc_valid = pc[valid_mask]
+hdg_valid = headings_norm_pca[valid_mask]
+if len(pc_valid) > 10:
+    lo, hi = np.percentile(pc_valid, 2, axis=0), np.percentile(pc_valid, 98, axis=0)
+    pc_valid = np.clip(pc_valid, lo, hi)
+S_pca = np.sqrt(np.abs(eigvals[::-1]) + 1e-12)
+
+warnings.filters[:] = _orig_filters
+
+sc = ax.scatter(pc_valid[:, 0], pc_valid[:, 1], c=hdg_valid, cmap='hsv',
                 s=3, alpha=0.5, edgecolors='none')
 cbar = plt.colorbar(sc, ax=ax, shrink=0.7, pad=0.02)
 cbar.set_label('Heading (rad)', fontsize=6, color='#888899', fontfamily='monospace')
 cbar.ax.tick_params(colors='#555566', labelsize=5)
-var_exp = (S[0]**2 + S[1]**2) / ((S**2).sum() + 1e-12)
+var_exp = (S_pca[0]**2 + S_pca[1]**2) / ((S_pca**2).sum() + 1e-12)
 ax.text(0.01, 0.97, f'var explained: {var_exp:.1%}',
         transform=ax.transAxes, fontsize=6, color=ACCENT_CYAN,
         fontfamily='monospace', va='top')
@@ -1221,6 +1235,13 @@ anim = animation.FuncAnimation(fig_anim, animate_fleet,
                                 interval=120)
 gif_path = os.path.join(ASSETS, "04_fleet.gif")
 anim.save(gif_path, writer='pillow', fps=10)
-plt.close()
 print(f"Saved {gif_path}")
+
+mp4_path = os.path.join(ASSETS, "04_fleet.mp4")
+writer_mp4 = animation.FFMpegWriter(fps=24, bitrate=4000,
+                                     codec='libx264',
+                                     extra_args=['-pix_fmt', 'yuv420p'])
+anim.save(mp4_path, writer=writer_mp4)
+plt.close()
+print(f"Saved {mp4_path}")
 print("\nDone.")

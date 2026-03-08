@@ -432,7 +432,7 @@ def mi_loss(emb_a, emb_b):
     return loss.mean()
 
 
-def train_protein(model, label, use_mi=False, n_epochs=400, bs=128):
+def train_protein(model, label, use_mi=False, n_epochs=200, bs=128):
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, n_epochs)
     losses = []
@@ -1373,5 +1373,12 @@ anim = animation.FuncAnimation(fig_anim, animate_protein,
                                 frames=N_FRAMES, interval=70)
 gif_path = os.path.join(ASSETS, "05_protein.gif")
 anim.save(gif_path, writer='pillow', fps=14)
-plt.close()
 print(f"Saved {gif_path}")
+
+mp4_path = os.path.join(ASSETS, "05_protein.mp4")
+writer_mp4 = animation.FFMpegWriter(fps=24, bitrate=4000,
+                                     codec='libx264',
+                                     extra_args=['-pix_fmt', 'yuv420p'])
+anim.save(mp4_path, writer=writer_mp4)
+plt.close()
+print(f"Saved {mp4_path}")

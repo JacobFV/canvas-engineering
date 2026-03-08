@@ -1849,7 +1849,14 @@ anim = animation.FuncAnimation(fig_anim, animate_ward_frame,
                                 frames=N_TIMESTEPS, interval=600)
 gif_path = os.path.join(ASSETS, "07_icu_patient.gif")
 anim.save(gif_path, writer='pillow', fps=3)
-plt.close()
 print(f"Saved {gif_path}")
+
+mp4_path = os.path.join(ASSETS, "07_icu_patient.mp4")
+writer_mp4 = animation.FFMpegWriter(fps=6, bitrate=4000,
+                                     codec='libx264',
+                                     extra_args=['-pix_fmt', 'yuv420p'])
+anim.save(mp4_path, writer=writer_mp4)
+plt.close()
+print(f"Saved {mp4_path}")
 
 print("\nDone. Ward simulation complete.")

@@ -445,7 +445,7 @@ def focal_loss(logits, targets, gamma=2.0, alpha=0.75):
     return (focal_weight * bce).mean()
 
 
-def train_atc(bound, label, n_epochs=250, bs=128):
+def train_atc(bound, label, n_epochs=150, bs=128):
     model = ATCModel(bound)
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, n_epochs)
@@ -1541,5 +1541,12 @@ anim_obj = animation.FuncAnimation(fig_anim, animate,
                                     interval=150)
 gif_path = os.path.join(ASSETS, "06_atc.gif")
 anim_obj.save(gif_path, writer='pillow', fps=8)
-plt.close()
 print(f"Saved {gif_path}")
+
+mp4_path = os.path.join(ASSETS, "06_atc.mp4")
+writer_mp4 = animation.FFMpegWriter(fps=24, bitrate=4000,
+                                     codec='libx264',
+                                     extra_args=['-pix_fmt', 'yuv420p'])
+anim_obj.save(mp4_path, writer=writer_mp4)
+plt.close()
+print(f"Saved {mp4_path}")
