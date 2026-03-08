@@ -97,8 +97,28 @@ Connection(src="thought", dst="visual", fn="perceiver")
 # patches → cls: fn="pooling"               # compress to single vector
 ```
 
-## Schema declares, executor runs
+## Dispatch: from declaration to execution
 
-The attention function type is a **declaration of intent**, not an implementation. A frozen CogVideoX backbone can only honor `weight` modulation (everything compiles to a mask). A custom training setup can dispatch each connection to its declared function type.
+All 17 attention types are fully implemented as `nn.Module` classes in `canvas_engineering.attention`. The `AttentionDispatcher` routes each topology connection to its resolved function:
 
-This is the same principle as the rest of the type system: you declare the structure, and the executor compiles it to whatever the backend supports.
+```python
+from canvas_engineering import AttentionDispatcher
+
+dispatcher = AttentionDispatcher(
+    topology=topology,
+    layout=layout,
+    d_model=256,
+    n_heads=4,
+)
+output = dispatcher(hidden_states)  # per-connection dispatch
+```
+
+A frozen CogVideoX backbone runs all positions through the same blocks (full attention), so it can only honor `weight` modulation. A custom or scratch backbone can use `AttentionDispatcher` for true per-connection dispatch.
+
+Custom attention types can be registered at runtime:
+
+```python
+from canvas_engineering import register_attention
+
+register_attention("my_custom_attn", MyCustomAttentionModule)
+```
