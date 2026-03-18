@@ -607,11 +607,13 @@ class MambaAttention(nn.Module):
         ssm_out = torch.stack(outputs, dim=1)  # (B, M, D)
         ssm_out = ssm_out * F.silu(z)  # Gated output
 
-        # Use SSM output as context for queries via simple cross-attention-like readout
-        # Pool SSM context and project to query space
-        context = ssm_out.mean(dim=1, keepdim=True)  # (B, 1, D)
-        out = self.out_proj(self.norm(context)).expand(B, N, -1)
-        return out
+        # Query-based readout: each query position attends to the SSM context
+        # sequence, allowing different query positions to selectively read.
+        q_norm = self.norm(queries)  # (B, N, D)
+        readout_logits = torch.bmm(q_norm, ssm_out.transpose(1, 2)) * (D ** -0.5)  # (B, N, M)
+        readout_attn = F.softmax(readout_logits, dim=-1)
+        out = torch.bmm(readout_attn, ssm_out)  # (B, N, D)
+        return self.out_proj(out)
 
 
 class RWKVAttention(nn.Module):
