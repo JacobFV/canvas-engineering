@@ -11,6 +11,7 @@ from canvas_engineering.types import (
     _intra_connections, _parent_child_connections, _array_element_connections,
     _generate_connections, _apply_temporal, _deduplicate,
     _insert_coarse_fields, _auto_canvas_size, _resolve_coarse_field,
+    _block_weighted_mean_period_from_tree, _flatten_fields_raw,
 )
 from canvas_engineering.canvas import SpatiotemporalCanvas
 from canvas_engineering.connectivity import Connection
@@ -1044,3 +1045,78 @@ class TestBottleneck:
         """T should default to 1 when not specified."""
         bound = compile_schema(SimpleType(), H=8, W=8, d_model=64)
         assert bound.layout.T == 1
+
+
+# -- Weighted mean period tests ----------------------------------------
+
+class TestBlockWeightedMeanPeriod:
+    def test_uniform_period(self):
+        """All fields same period → result is that period."""
+        @dataclass
+        class Uniform:
+            a: Field = Field(2, 2, period=4)
+            b: Field = Field(3, 3, period=4)
+
+        node = _walk(Uniform())
+        assert _block_weighted_mean_period_from_tree(node) == 4
+
+    def test_weighted_by_block_count(self):
+        """Larger fields should dominate the mean."""
+        @dataclass
+        class Mixed:
+            big: Field = Field(10, 10, period=1)    # 100 blocks
+            small: Field = Field(1, 1, period=100)   # 1 block
+
+        node = _walk(Mixed())
+        result = _block_weighted_mean_period_from_tree(node)
+        # weighted_sum = 100*1 + 1*100 = 200, total_weight = 101
+        # mean = 200/101 ≈ 1.98, rounded = 2
+        assert result == 2  # dominated by the big field
+
+    def test_equal_sized_fields(self):
+        """Equal-sized fields → simple average of periods."""
+        @dataclass
+        class Equal:
+            a: Field = Field(2, 2, period=1)   # 4 blocks
+            b: Field = Field(2, 2, period=9)   # 4 blocks
+
+        node = _walk(Equal())
+        result = _block_weighted_mean_period_from_tree(node)
+        # weighted_sum = 4*1 + 4*9 = 40, total_weight = 8, mean = 5
+        assert result == 5
+
+    def test_empty_node_returns_1(self):
+        """Empty node should return period 1."""
+        @dataclass
+        class Empty:
+            x: int = 5
+
+        node = _walk(Empty())
+        assert _block_weighted_mean_period_from_tree(node) == 1
+
+    def test_minimum_period_is_1(self):
+        """Result should always be at least 1."""
+        @dataclass
+        class ZeroPeriod:
+            a: Field = Field(1, 1, period=0)
+
+        node = _walk(ZeroPeriod())
+        assert _block_weighted_mean_period_from_tree(node) >= 1
+
+    def test_coarse_field_period_uses_weighted_mean(self):
+        """Coarse-grained fields should use weighted mean period."""
+        @dataclass
+        class Inner:
+            big_fast: Field = Field(10, 10, period=1)
+            small_slow: Field = Field(1, 1, period=100)
+
+        @dataclass
+        class Outer:
+            inner: Inner = dc_field(default_factory=Inner)
+            top: Field = Field(1, 1)
+
+        bound = compile_schema(Outer(), T=4, H=16, W=16, d_model=64)
+        # The coarse-grained field for 'inner' should have period ≈ 2
+        # (dominated by the 10x10 fast field)
+        inner_spec = bound["inner"].spec
+        assert inner_spec.period == 2

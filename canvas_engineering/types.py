@@ -252,24 +252,26 @@ def _flatten_fields(node: _TypeNode) -> List[Tuple[str, Field, str]]:
 
 # -- Coarse Field Insertion (Internal) --------------------------------
 
-def _median_period_from_tree(node: _TypeNode) -> int:
-    """Get median period from all Fields in a subtree."""
-    periods = []
-    for fe in node.fields:
-        periods.append(fe.field.period)
-    for child in node.children:
-        periods.extend(
-            fe.field.period for fe in _flatten_fields_raw(child)
-        )
-    for elems in node.arrays.values():
-        for elem in elems:
-            periods.extend(
-                fe.field.period for fe in _flatten_fields_raw(elem)
-            )
-    if not periods:
+def _block_weighted_mean_period_from_tree(node: _TypeNode) -> int:
+    """Get block-count-weighted mean period from all Fields in a subtree.
+
+    Each field's period is weighted by its canvas footprint (h * w).
+    Fields with more positions have more influence on the coarse-grained
+    summary's update rate, so the summary tracks the dominant timescale
+    of the subtree rather than giving every field an equal vote.
+    """
+    all_fields = _flatten_fields_raw(node)
+    if not all_fields:
         return 1
-    periods.sort()
-    return periods[len(periods) // 2]
+    weighted_sum = 0
+    total_weight = 0
+    for fe in all_fields:
+        block_count = fe.field.h * fe.field.w
+        weighted_sum += fe.field.period * block_count
+        total_weight += block_count
+    if total_weight == 0:
+        return 1
+    return max(1, round(weighted_sum / total_weight))
 
 
 def _flatten_fields_raw(node: _TypeNode) -> List[_FieldEntry]:
@@ -305,7 +307,7 @@ def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
 
         local = child.path.rsplit(".", 1)[-1] if "." in child.path else child.path
         cg_template = child.coarse_field or Field(1, 1)
-        mp = _median_period_from_tree(child)
+        mp = _block_weighted_mean_period_from_tree(child)
         coarse_field = Field(
             cg_template.h, cg_template.w, period=mp,
             semantic_type=cg_template.semantic_type or "coarse: {}".format(child.path),
@@ -336,7 +338,7 @@ def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
             _insert_coarse_fields(elem)  # recurse first
 
             cg_template = elem.coarse_field or Field(1, 1)
-            mp = _median_period_from_tree(elem)
+            mp = _block_weighted_mean_period_from_tree(elem)
             coarse_field = Field(
                 cg_template.h, cg_template.w, period=mp,
                 semantic_type=cg_template.semantic_type or "coarse: {}".format(elem.path),
