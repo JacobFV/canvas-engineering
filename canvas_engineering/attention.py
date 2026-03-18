@@ -409,6 +409,20 @@ class LocalAttention(nn.Module):
         return self.out_proj(out)
 
 
+class CogVideoXAttention(CrossAttention):
+    """CogVideoX-native attention type. Semantically: "use the backbone's attention."
+
+    Within the canvas AttentionDispatcher this is standard cross-attention.
+    When a CogVideoX backbone is grafted via graft_looped_blocks(), the backbone's
+    native multi-head attention with 3D RoPE supersedes this entirely.
+
+    Declare connections as "cogvideox" in your schema to signal that they should
+    honor the backbone's native CogVideoX attention mechanism. Safe to use as the
+    default_attn on any region that will be trained inside a CogVideoX transformer.
+    """
+    pass
+
+
 class RandomFixedAttention(nn.Module):
     """Random sparse attention pattern, frozen at initialization.
 
@@ -798,6 +812,7 @@ ATTENTION_REGISTRY: Dict[str, type] = {
     "mamba": MambaAttention,
     "rwkv": RWKVAttention,
     "hyena": HyenaAttention,
+    "cogvideox": CogVideoXAttention,
     "none": NoneAttention,
 }
 

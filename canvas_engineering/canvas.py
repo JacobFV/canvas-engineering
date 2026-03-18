@@ -109,6 +109,13 @@ ATTENTION_TYPES = {
     "mixture": "Mixture-of-experts style routing. Each src position is "
         "routed to a subset of dst positions by a learned router. "
         "Sparse but adaptive. Good for multi-modal hubs.",
+
+    # --- Backbone-native ---
+    "cogvideox": "CogVideoX-native attention. Within the canvas dispatcher "
+        "this is standard cross-attention; when a CogVideoX backbone is "
+        "grafted via graft_looped_blocks(), the backbone's native 3D-RoPE "
+        "multi-head attention supersedes this entirely. Use as default_attn "
+        "on any region trained inside a CogVideoX transformer.",
 }
 
 

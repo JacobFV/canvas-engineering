@@ -436,7 +436,7 @@ def test_attention_types_registry():
         "cross_attention", "linear_attention", "cosine_attention",
         "sigmoid_attention", "gated", "perceiver", "pooling", "copy",
         "mamba", "rwkv", "hyena", "sparse_attention", "local_attention",
-        "none", "random_fixed", "mixture",
+        "none", "random_fixed", "mixture", "cogvideox",
     }
     assert set(ATTENTION_TYPES.keys()) == expected
     for name, desc in ATTENTION_TYPES.items():

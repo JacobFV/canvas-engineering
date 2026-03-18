@@ -40,6 +40,7 @@ from canvas_engineering.attention import (
     MambaAttention,
     RWKVAttention,
     HyenaAttention,
+    CogVideoXAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.types import (
@@ -97,5 +98,6 @@ __all__ = [
     "MambaAttention",
     "RWKVAttention",
     "HyenaAttention",
+    "CogVideoXAttention",
     "AttentionDispatcher",
 ]
