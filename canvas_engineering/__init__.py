@@ -10,15 +10,18 @@ Quick start:
 """
 
 from canvas_engineering.canvas import (
-    ATTENTION_TYPES, CanvasLayout, RegionSpec, SpatiotemporalCanvas,
-    transfer_distance,
+    ATTENTION_TYPES, CanvasLayout, PeriodEmbedding, RegionSpec,
+    SpatiotemporalCanvas, transfer_distance,
 )
 from canvas_engineering.looped_block import LoopedBlockWrapper
 from canvas_engineering.graft import graft_looped_blocks, freeze_full, freeze_half
 from canvas_engineering.curriculum import CurriculumScheduler
 from canvas_engineering.action_heads import ActionHead
 from canvas_engineering.sharpening import SharpeningSchedule
-from canvas_engineering.connectivity import Connection, CanvasTopology
+from canvas_engineering.connectivity import (
+    Connection, CanvasTopology, TemporalFill,
+    TemporalFillPredictor, TemporalFillModule,
+)
 from canvas_engineering.schema import CanvasSchema
 from canvas_engineering.attention import (
     ATTENTION_REGISTRY,
@@ -70,6 +73,10 @@ __all__ = [
     "SharpeningSchedule",
     "Connection",
     "CanvasTopology",
+    "TemporalFill",
+    "TemporalFillPredictor",
+    "TemporalFillModule",
+    "PeriodEmbedding",
     "Field",
     "LayoutStrategy",
     "ConnectivityPolicy",

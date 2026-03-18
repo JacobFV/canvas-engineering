@@ -4,6 +4,12 @@ Routes each topology connection to its resolved attention function,
 extracting src/dst positions from the layout. Replaces monolithic
 masked attention with heterogeneous per-edge computation.
 
+Temporal fill modes are fully integrated: when a dst region has no
+positions at the requested timestep, the connection's temporal_fill
+mode determines how to resolve the dst (HOLD, INTERPOLATE, DECAY,
+PREDICT, or DROP). For PREDICT connections, the fill module's learned
+predict heads transform key/value tensors before attention.
+
 Usage:
     from canvas_engineering import CanvasTopology, CanvasLayout
     from canvas_engineering.dispatch import AttentionDispatcher
@@ -28,7 +34,13 @@ import torch.nn as nn
 
 from canvas_engineering.attention import create_attention
 from canvas_engineering.canvas import CanvasLayout
-from canvas_engineering.connectivity import CanvasTopology, Connection
+from canvas_engineering.connectivity import (
+    CanvasTopology,
+    Connection,
+    TemporalFill,
+    TemporalFillModule,
+    _resolve_temporal_fill,
+)
 
 
 class AttentionDispatcher(nn.Module):
@@ -37,9 +49,11 @@ class AttentionDispatcher(nn.Module):
     For each connection in topology.attention_ops(layout):
       1. Extract src/dst position indices from layout
       2. Gather queries from src positions, keys/values from dst positions
-      3. Run the resolved attention function
-      4. Scale by connection weight
-      5. Scatter-add results back to output
+      3. Apply temporal fill logic for cross-frequency connections
+      4. For PREDICT fill, transform keys/values via learned predict head
+      5. Run the resolved attention function
+      6. Scale by connection weight
+      7. Scatter-add results back to output
 
     Multiple connections writing to the same src region accumulate
     additively and are normalized by the total incoming weight.
@@ -51,8 +65,10 @@ class AttentionDispatcher(nn.Module):
         n_heads: Number of attention heads.
         dropout: Dropout rate.
         skip_temporal: If True, ignore temporal constraints (t_src/t_dst)
-            and treat all connections as dense-in-time. Simpler but loses
-            temporal causality for connections that declare it.
+            and treat all connections as dense-in-time.
+        fill_module: Optional TemporalFillModule for PREDICT connections.
+            If None and the topology has PREDICT connections, one is
+            auto-created.
     """
 
     def __init__(
@@ -63,6 +79,7 @@ class AttentionDispatcher(nn.Module):
         n_heads: int = 4,
         dropout: float = 0.0,
         skip_temporal: bool = False,
+        fill_module: Optional[TemporalFillModule] = None,
     ):
         super().__init__()
         self.topology = topology
@@ -97,15 +114,18 @@ class AttentionDispatcher(nn.Module):
 
         # Pre-compute per-timestep indices for temporal connections
         self._region_t_idx: Dict[str, Dict[int, torch.Tensor]] = {}
+        self._region_t_idx_lists: Dict[str, Dict[int, List[int]]] = {}
         if topology.has_temporal_constraints and not skip_temporal:
             for name in layout.regions:
                 self._region_t_idx[name] = {}
+                self._region_t_idx_lists[name] = {}
                 for t in layout.region_timesteps(name):
                     idx = layout.region_indices_at_t(name, t)
                     if idx:
                         self._region_t_idx[name][t] = torch.tensor(
                             idx, dtype=torch.long
                         )
+                        self._region_t_idx_lists[name][t] = idx
 
         # Pre-compute incoming weight sum per region for normalization
         self._incoming_weight: Dict[str, float] = {}
@@ -113,6 +133,18 @@ class AttentionDispatcher(nn.Module):
             self._incoming_weight[src] = (
                 self._incoming_weight.get(src, 0.0) + weight
             )
+
+        # Build or adopt fill module for PREDICT connections
+        has_predict = any(
+            c.temporal_fill == TemporalFill.PREDICT
+            for c in topology.connections
+        )
+        if fill_module is not None:
+            self.fill_module = fill_module
+        elif has_predict:
+            self.fill_module = topology.build_fill_module(layout, d_model)
+        else:
+            self.fill_module = None
 
     def _get_device_idx(
         self, name: str, device: torch.device
@@ -168,9 +200,10 @@ class AttentionDispatcher(nn.Module):
                 output[:, src_idx] += attended * weight
                 weight_map[src_idx] += weight
             else:
-                # Temporal: iterate reference frames
+                # Temporal: iterate reference frames with fill logic
                 t_src_off = conn_obj.t_src
                 t_dst_off = conn_obj.t_dst
+
                 for ref in range(self.layout.T):
                     # Resolve src indices
                     if t_src_off is not None:
@@ -182,26 +215,54 @@ class AttentionDispatcher(nn.Module):
                     else:
                         s_idx = self._get_device_idx(src, device)
 
-                    # Resolve dst indices
-                    if t_dst_off is not None:
-                        abs_dst = ref + t_dst_off
-                        dst_t_dict = self._region_t_idx.get(dst, {})
-                        if abs_dst not in dst_t_dict:
-                            continue
-                        d_idx = dst_t_dict[abs_dst].to(device)
-                    else:
-                        d_idx = self._get_device_idx(dst, device)
-
-                    if len(s_idx) == 0 or len(d_idx) == 0:
+                    if len(s_idx) == 0:
                         continue
 
-                    queries = x[:, s_idx]
-                    keys = x[:, d_idx]
-                    values = x[:, d_idx]
+                    # Resolve dst indices with temporal fill
+                    if t_dst_off is not None:
+                        abs_dst = ref + t_dst_off
+                        dst_t_lists = self._region_t_idx_lists.get(dst, {})
+                        resolved = _resolve_temporal_fill(
+                            conn_obj, dst_t_lists, abs_dst, self.layout.T,
+                        )
 
-                    attended = attn_fn(queries, keys, values)
-                    output[:, s_idx] += attended * weight
-                    weight_map[s_idx] += weight
+                        for dst_indices, w in resolved:
+                            d_idx = torch.tensor(
+                                dst_indices, dtype=torch.long, device=device,
+                            )
+
+                            queries = x[:, s_idx]
+                            keys = x[:, d_idx]
+                            values = x[:, d_idx]
+
+                            # Apply predict head for PREDICT connections
+                            if (
+                                conn_obj.temporal_fill == TemporalFill.PREDICT
+                                and self.fill_module is not None
+                            ):
+                                keys = self.fill_module.transform_keys(
+                                    src, dst, keys,
+                                )
+                                values = self.fill_module.transform_keys(
+                                    src, dst, values,
+                                )
+
+                            attended = attn_fn(queries, keys, values)
+                            output[:, s_idx] += attended * w
+                            weight_map[s_idx] += w
+                    else:
+                        # dst is dense (t_dst=None), no fill needed
+                        d_idx = self._get_device_idx(dst, device)
+                        if len(d_idx) == 0:
+                            continue
+
+                        queries = x[:, s_idx]
+                        keys = x[:, d_idx]
+                        values = x[:, d_idx]
+
+                        attended = attn_fn(queries, keys, values)
+                        output[:, s_idx] += attended * weight
+                        weight_map[s_idx] += weight
 
         # Normalize by total incoming weight (avoid divide-by-zero)
         nonzero = weight_map > 0

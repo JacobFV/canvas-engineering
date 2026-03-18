@@ -306,12 +306,63 @@ class SinusoidalPositionalEncoding3D(nn.Module):
         return self.pe[:T, :H, :W, :]
 
 
+class PeriodEmbedding(nn.Module):
+    """Learned embedding indexed by log-bucketed temporal period.
+
+    Summed into position representations so the model knows each position's
+    native update rate. Combined with temporal positional encoding, this
+    lets the model infer staleness when reading held values from slower
+    regions via temporal fill.
+
+    Period values are mapped to buckets via log scaling:
+        period=1  → bucket 0    (tick-rate)
+        period=4  → bucket 2    (hourly)
+        period=16 → bucket 4    (daily)
+        period=576 → bucket 10  (quarterly)
+        period=4608 → bucket 13 (decadal)
+
+    Args:
+        d_model: Embedding dimension (must match canvas d_model).
+        n_buckets: Number of discrete period buckets.
+        max_period: Maximum expected period (for log scaling).
+    """
+
+    def __init__(self, d_model: int, n_buckets: int = 16, max_period: int = 10000):
+        super().__init__()
+        self.n_buckets = n_buckets
+        self.max_period = max_period
+        self.embedding = nn.Embedding(n_buckets, d_model)
+        nn.init.normal_(self.embedding.weight, std=0.02)
+
+    def bucket(self, period: int) -> int:
+        """Map a period to a bucket index via log scaling."""
+        if period <= 1:
+            return 0
+        log_ratio = math.log(period) / math.log(max(self.max_period, 2))
+        b = int(log_ratio * (self.n_buckets - 1)) + 1
+        return min(b, self.n_buckets - 1)
+
+    def forward(self, period: int) -> torch.Tensor:
+        """Get the (d_model,) embedding vector for a given period."""
+        idx = self.bucket(period)
+        return self.embedding.weight[idx]
+
+
 class SpatiotemporalCanvas(nn.Module):
-    """Manages the unified canvas tensor with positional + modality embeddings.
+    """Manages the unified canvas tensor with positional + modality + period embeddings.
+
+    Each position's representation is the sum of:
+    1. Content embedding (empty token or placed data)
+    2. 3D sinusoidal positional encoding (T, H, W)
+    3. Region identity (learned modality embedding or semantic conditioning)
+    4. Period embedding (learned, indexed by log-bucketed update period)
+
+    The period embedding tells the model each position's native update rate,
+    enabling it to infer staleness when reading held values from slower
+    regions via temporal fill connections.
 
     Supports two modes of per-region identity:
-    1. **Learned modality embeddings** (default): one learned vector per region,
-       added when data is placed. Backward compatible with all existing code.
+    1. **Learned modality embeddings** (default): one learned vector per region.
     2. **Semantic conditioning**: frozen embeddings from a text model, projected
        to d_model with optional learned residuals. Pass a SemanticConditioner
        to ``__init__`` to enable. Replaces learned modality embeddings.
@@ -340,12 +391,13 @@ class SpatiotemporalCanvas(nn.Module):
         self.pos_enc = SinusoidalPositionalEncoding3D(
             layout.d_model, max_T=layout.T, max_H=layout.H, max_W=layout.W
         )
+        self.period_embedding = PeriodEmbedding(layout.d_model)
         self.empty_token = nn.Parameter(torch.randn(layout.d_model) * 0.02)
         # Map region_name -> sanitized key for ParameterDict compatibility
         self._key_map = {name: self._sanitize_key(name) for name in layout.regions}
 
         if semantic_conditioner is None:
-            # Use learned modality embeddings (backward compatible)
+            # Use learned modality embeddings
             self.modality_embeddings = nn.ParameterDict(
                 {self._key_map[name]: nn.Parameter(torch.randn(layout.d_model) * 0.02)
                  for name in layout.regions}
@@ -355,15 +407,24 @@ class SpatiotemporalCanvas(nn.Module):
             self.modality_embeddings = None
 
     def create_empty(self, batch_size: int) -> torch.Tensor:
-        """(B, N, d_model) canvas filled with empty tokens + positional encoding.
+        """(B, N, d_model) canvas filled with empty tokens + positional + period encoding.
 
-        If a semantic conditioner is present, also adds semantic conditioning
-        to all positions so that empty positions carry semantic identity.
+        Each position gets: empty_token + 3D_PE + period_embedding.
+        If a semantic conditioner is present, also adds semantic conditioning.
         """
         L = self.layout
         canvas = self.empty_token.unsqueeze(0).unsqueeze(0).expand(batch_size, L.num_positions, L.d_model).clone()
         pe = self.pos_enc(L.T, L.H, L.W).reshape(1, L.num_positions, L.d_model)
         canvas = canvas + pe
+
+        # Sum period embedding for each region's positions
+        for name in L.regions:
+            spec = L.region_spec(name)
+            period_emb = self.period_embedding(spec.period)
+            indices = L.region_indices(name)
+            if indices:
+                idx = torch.tensor(indices, device=canvas.device, dtype=torch.long)
+                canvas[:, idx] = canvas[:, idx] + period_emb.to(canvas.device)
 
         if self.semantic_conditioner is not None:
             canvas = self.semantic_conditioner.condition_canvas(canvas, L)
@@ -371,7 +432,7 @@ class SpatiotemporalCanvas(nn.Module):
         return canvas
 
     def place(self, canvas: torch.Tensor, embeddings: torch.Tensor, region_name: str) -> torch.Tensor:
-        """Write embeddings into a named region, adding modality/semantic embedding."""
+        """Write embeddings into a named region, adding modality + period embeddings."""
         indices = self.layout.region_indices(region_name)
         n = len(indices)
         if embeddings.shape[1] > n:
@@ -393,8 +454,12 @@ class SpatiotemporalCanvas(nn.Module):
         else:
             region_emb = 0
 
+        # Add period embedding so the model knows this region's update rate
+        spec = self.layout.region_spec(region_name)
+        period_emb = self.period_embedding(spec.period).to(canvas.device)
+
         canvas = canvas.clone()
-        canvas[:, idx] = embeddings + region_emb
+        canvas[:, idx] = embeddings + region_emb + period_emb
         return canvas
 
     def extract(self, canvas: torch.Tensor, region_name: str) -> torch.Tensor:
