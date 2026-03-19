@@ -121,7 +121,7 @@ class TemporalFillModel(nn.Module):
     Architecture: input projection → canvas placement → N x (dispatcher + FFN) → readout.
 
     Uses AttentionDispatcher (not additive mask) so that _resolve_temporal_fill
-    and TemporalFillModule.transform_keys are exercised on every forward pass.
+    is exercised on every forward pass.
     """
 
     def __init__(
@@ -322,7 +322,6 @@ def make_layout_and_topology(
         Connection(
             src="fast", dst="slow", t_src=0, t_dst=0,
             temporal_fill=fill_mode,
-            decay_halflife=3.0,
         ),
     ])
     return layout, topology
@@ -354,11 +353,11 @@ def make_two_anchor_layout_and_topology(
         Connection(src="fast", dst="fast", t_src=0, t_dst=0),
         Connection(
             src="fast", dst="slow_start", t_src=0, t_dst=0,
-            temporal_fill=fill_mode, decay_halflife=3.0,
+            temporal_fill=fill_mode,
         ),
         Connection(
             src="fast", dst="slow_end", t_src=0, t_dst=0,
-            temporal_fill=fill_mode, decay_halflife=3.0,
+            temporal_fill=fill_mode,
         ),
     ])
     return layout, topology
@@ -454,19 +453,6 @@ def train_fill_mode(
         for f in range(n_fast_frames):
             step_metrics["loss_frame_{}".format(f)] = per_frame_losses[f].item()
 
-        # Fill-mode-specific metrics
-        if fill_mode == TemporalFill.DECAY:
-            # Log effective decay weights at various staleness levels
-            for s in [1, 2, 4]:
-                w = math.exp(-s * math.log(2) / 3.0)
-                step_metrics["decay_weight_staleness_{}".format(s)] = w
-
-        if fill_mode == TemporalFill.PREDICT and model.dispatchers[0].fill_module is not None:
-            fm = model.dispatchers[0].fill_module
-            for key, head in fm.predict_heads.items():
-                out_weight = head.net[-1].weight
-                step_metrics["predict_head_{}_output_norm".format(key)] = out_weight.norm().item()
-
         # PeriodEmbedding norms
         pe = model.canvas.period_embedding
         for b in [0, 5, 10, 15]:
@@ -485,11 +471,6 @@ def train_fill_mode(
         learned = {}
         pe = model.canvas.period_embedding
         learned["period_embedding_weights"] = pe.embedding.weight
-        if model.dispatchers[0].fill_module is not None:
-            fm = model.dispatchers[0].fill_module
-            for key, head in fm.predict_heads.items():
-                learned["predict_head_{}_output_weight".format(key)] = head.net[-1].weight
-                learned["predict_head_{}_output_bias".format(key)] = head.net[-1].bias
         logger.save_learned_params(learned)
 
         # Summary

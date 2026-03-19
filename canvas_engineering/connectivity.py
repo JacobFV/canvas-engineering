@@ -22,9 +22,7 @@ Temporal fill modes:
 
     TemporalFill.DROP         — skip (no connection).
     TemporalFill.HOLD         — use most recent available value. Default.
-    TemporalFill.INTERPOLATE  — lerp between surrounding values.
-    TemporalFill.DECAY        — hold with exponentially decaying weight.
-    TemporalFill.PREDICT      — hold + learned MLP extrapolation.
+    TemporalFill.INTERPOLATE  — weighted interpolation between surrounding values.
 
 Example:
     topology = CanvasTopology(
@@ -70,24 +68,17 @@ class TemporalFill(str, Enum):
     HOLD:        Zero-order hold. Use the most recent available value from the
                  slow region. This is how the real world works — you trade on
                  last quarter's GDP until this quarter's is released.
-    INTERPOLATE: Linear interpolation between surrounding available values.
-                 Requires both past and future endpoints (falls back to HOLD
-                 if only past is available). Best for smooth signals during
+    INTERPOLATE: Weighted interpolation between surrounding available values.
+                 For order=1 (default): linear lerp between nearest past and
+                 future endpoints (falls back to HOLD if only past is available).
+                 For order=N: inverse-distance weighting (IDW) over up to N+1
+                 nearest anchor points with weights proportional to 1/dist^N,
+                 non-negative and normalized. Best for smooth signals during
                  training where both endpoints are known.
-    DECAY:       Hold with exponentially decaying mask weight. The connection
-                 weight is multiplied by exp(-staleness * ln2 / decay_halflife).
-                 Encodes a hard prior that stale values are less informative.
-    PREDICT:     Hold + learned extrapolation. A small residual MLP transforms
-                 the held value. The mask is identical to HOLD, but the
-                 TemporalFillModule applies a predict head to key values
-                 during attention. Use when stale values may be actively
-                 misleading and learned correction is worth the parameters.
     """
     DROP = "drop"
     HOLD = "hold"
     INTERPOLATE = "interpolate"
-    DECAY = "decay"
-    PREDICT = "predict"
 
 
 @dataclass(frozen=True)
@@ -111,8 +102,10 @@ class Connection:
             backend-dependent.
         temporal_fill: How to handle missing dst positions at the requested
             timestep. Only applies when t_dst is not None. Default HOLD.
-        decay_halflife: For TemporalFill.DECAY, the number of timesteps at
-            which the mask weight decays to 50%. Ignored for other fill modes.
+        interpolation_order: For TemporalFill.INTERPOLATE, the IDW order.
+            order=1 (default) gives linear lerp between nearest past and future.
+            order=N uses up to N+1 anchor points weighted by 1/dist^N, normalized.
+            Ignored for DROP and HOLD fill modes.
     """
     src: str
     dst: str
@@ -121,7 +114,7 @@ class Connection:
     t_dst: Optional[int] = None
     fn: Optional[str] = None
     temporal_fill: TemporalFill = TemporalFill.HOLD
-    decay_halflife: float = 10.0
+    interpolation_order: int = 1
 
 
 # ── Temporal fill helpers ────────────────────────────────────────────
@@ -153,7 +146,7 @@ def _find_nearest_future(
 
 
 def _resolve_temporal_fill(
-    conn: Connection,
+    conn: "Connection",
     dst_t_cache: Dict[int, List[int]],
     abs_dst: int,
     max_T: int,
@@ -176,52 +169,66 @@ def _resolve_temporal_fill(
     if fill == TemporalFill.DROP:
         return []
 
-    if fill in (TemporalFill.HOLD, TemporalFill.PREDICT):
-        # PREDICT generates the same mask as HOLD — the predict head
-        # is applied separately by TemporalFillModule during attention.
+    if fill == TemporalFill.HOLD:
         past = _find_nearest_past(dst_t_cache, abs_dst)
         if past is not None:
             return [(dst_t_cache[past[0]], conn.weight)]
-        return []
-
-    if fill == TemporalFill.DECAY:
-        past = _find_nearest_past(dst_t_cache, abs_dst)
-        if past is not None:
-            held_t, staleness = past
-            w = conn.weight * math.exp(
-                -staleness * math.log(2) / max(conn.decay_halflife, 1e-6)
-            )
-            return [(dst_t_cache[held_t], w)]
         return []
 
     if fill == TemporalFill.INTERPOLATE:
-        past = _find_nearest_past(dst_t_cache, abs_dst)
-        future = _find_nearest_future(dst_t_cache, abs_dst, max_T)
-        if past is not None and future is not None:
-            past_t, past_d = past
-            future_t, future_d = future
-            span = past_d + future_d
-            w_past = (future_d / span) * conn.weight
-            w_future = (past_d / span) * conn.weight
-            return [
-                (dst_t_cache[past_t], w_past),
-                (dst_t_cache[future_t], w_future),
-            ]
-        elif past is not None:
-            # Only past available — fall back to hold
-            return [(dst_t_cache[past[0]], conn.weight)]
-        elif future is not None:
-            # Only future available — use it
-            return [(dst_t_cache[future[0]], conn.weight)]
-        return []
+        order = conn.interpolation_order
+
+        if order <= 1:
+            # Linear lerp: use nearest past and future
+            past = _find_nearest_past(dst_t_cache, abs_dst)
+            future = _find_nearest_future(dst_t_cache, abs_dst, max_T)
+            if past is not None and future is not None:
+                past_t, past_d = past
+                future_t, future_d = future
+                span = past_d + future_d
+                w_past = (future_d / span) * conn.weight
+                w_future = (past_d / span) * conn.weight
+                return [
+                    (dst_t_cache[past_t], w_past),
+                    (dst_t_cache[future_t], w_future),
+                ]
+            elif past is not None:
+                # Only past available — fall back to hold
+                return [(dst_t_cache[past[0]], conn.weight)]
+            elif future is not None:
+                # Only future available — use it
+                return [(dst_t_cache[future[0]], conn.weight)]
+            return []
+        else:
+            # Higher-order IDW: collect up to order+1 nearest anchor points
+            # Gather all populated timesteps and their distances
+            anchors: List[Tuple[int, int]] = []  # (timestep, distance)
+            for t in sorted(dst_t_cache.keys()):
+                if dst_t_cache.get(t):
+                    dist = abs(t - abs_dst)
+                    if dist > 0:
+                        anchors.append((t, dist))
+
+            if not anchors:
+                return []
+
+            # Sort by distance and take the closest order+1 anchors
+            anchors.sort(key=lambda x: x[1])
+            anchors = anchors[: order + 1]
+
+            # Compute IDW weights: w_i = 1/dist^order, normalized
+            raw_weights = [1.0 / (d ** order) for _, d in anchors]
+            total = sum(raw_weights)
+            if total < 1e-12:
+                return []
+
+            result = []
+            for (t, _), rw in zip(anchors, raw_weights):
+                w = (rw / total) * conn.weight
+                result.append((dst_t_cache[t], w))
+            return result
 
     return []
-
-
-def _sanitize_conn_key(src: str, dst: str) -> str:
-    """Create a safe module key from src/dst region names."""
-    key = "{}_to_{}".format(src, dst)
-    return key.replace(".", "__").replace("[", "_").replace("]", "_")
 
 
 # ── Topology ─────────────────────────────────────────────────────────
@@ -379,40 +386,19 @@ class CanvasTopology:
         """Which regions query against `region` (as keys/values)?"""
         return [c.src for c in self.connections if c.dst == region]
 
-    # ── Fill module ──────────────────────────────────────────────────────
-
-    def build_fill_module(
-        self, layout: CanvasLayout, d_model: int,
-    ) -> "TemporalFillModule":
-        """Create a TemporalFillModule for PREDICT connections.
-
-        The module holds learned predict heads that transform held dst
-        values during attention for connections with TemporalFill.PREDICT.
-
-        Args:
-            layout: Canvas layout for computing held position mappings.
-            d_model: Model dimension for predict head sizing.
-
-        Returns:
-            TemporalFillModule ready to be used in the attention dispatcher.
-        """
-        return TemporalFillModule(self, layout, d_model)
-
     # ── Mask generation ──────────────────────────────────────────────────
 
     def to_attention_mask(self, layout: CanvasLayout, device: str = "cpu") -> torch.Tensor:
         """Generate (N, N) attention mask from topology.
 
         mask[i, j] > 0 means token i (query) attends to token j (key).
-        Value is the connection weight (may be fractional for DECAY/INTERPOLATE).
+        Value is the connection weight (may be fractional for INTERPOLATE).
 
         Temporal fill modes are applied when dst has no positions at the
         requested timestep:
             DROP:        No connection (mask stays 0).
             HOLD:        Connect to most recent available dst positions.
-            INTERPOLATE: Connect to surrounding dst positions with lerp weights.
-            DECAY:       Connect to most recent with decaying weight.
-            PREDICT:     Same mask as HOLD (predict head applied separately).
+            INTERPOLATE: Connect to surrounding dst positions with IDW weights.
         """
         N = layout.num_positions
         mask = torch.zeros(N, N, device=device)
@@ -460,7 +446,7 @@ class CanvasTopology:
             elif conn.t_dst is not None:
                 # dst is temporally constrained — temporal fill applies.
                 # Resolve in real-time space so period-mismatched regions
-                # expose their natural inter-update gaps to INTERPOLATE/DECAY.
+                # expose their natural inter-update gaps to INTERPOLATE.
                 dst_real = real_t_idx_cache.get(conn.dst, {})
                 for ref in range(layout.T):
                     # Resolve src positions (canvas frame space)
@@ -546,94 +532,3 @@ class CanvasTopology:
     def __repr__(self) -> str:
         return "CanvasTopology(connections={}, regions={})".format(
             len(self.connections), sorted(self.regions))
-
-
-# ── Temporal fill modules ────────────────────────────────────────────
-
-class TemporalFillPredictor(nn.Module):
-    """Small residual MLP that extrapolates a stale held value.
-
-    Used by TemporalFill.PREDICT connections. Transforms the held dst
-    activations so they better approximate what the current value would be.
-
-    Initialized near-identity (zero output layer) so predictions start
-    as pass-through and gradually learn corrections during training.
-    """
-
-    def __init__(self, d_model: int, hidden_mult: int = 2):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_model, d_model * hidden_mult),
-            nn.GELU(),
-            nn.Linear(d_model * hidden_mult, d_model),
-        )
-        # Zero-init output so initial behavior = identity (residual only)
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x + learned_correction(x). Starts as identity."""
-        return x + self.net(x)
-
-
-class TemporalFillModule(nn.Module):
-    """Manages temporal fill prediction heads for PREDICT connections.
-
-    Created via CanvasTopology.build_fill_module(). Holds one
-    TemporalFillPredictor per unique (src, dst) pair that uses
-    TemporalFill.PREDICT, and provides transform_keys() for the
-    attention dispatcher to call.
-
-    Usage in attention dispatcher:
-        fill_module = topology.build_fill_module(layout, d_model)
-
-        # During attention for a PREDICT connection:
-        keys = fill_module.transform_keys(src_name, dst_name, keys)
-    """
-
-    def __init__(
-        self,
-        topology: CanvasTopology,
-        layout: CanvasLayout,
-        d_model: int,
-    ):
-        super().__init__()
-        self.predict_heads = nn.ModuleDict()
-        self._predict_connection_keys: Set[str] = set()
-
-        # Create predict heads for each unique PREDICT (src, dst) pair
-        for conn in topology.connections:
-            if conn.temporal_fill != TemporalFill.PREDICT:
-                continue
-            if conn.t_dst is None:
-                continue  # Dense temporal — no hold needed
-
-            key = _sanitize_conn_key(conn.src, conn.dst)
-            if key not in self.predict_heads:
-                self.predict_heads[key] = TemporalFillPredictor(d_model)
-            self._predict_connection_keys.add(key)
-
-    def has_predict_head(self, src: str, dst: str) -> bool:
-        """Check if a predict head exists for this (src, dst) pair."""
-        return _sanitize_conn_key(src, dst) in self._predict_connection_keys
-
-    def transform_keys(
-        self, src: str, dst: str, keys: torch.Tensor,
-    ) -> torch.Tensor:
-        """Apply the predict head to transform held key values.
-
-        Called by the attention dispatcher for PREDICT connections.
-        If no predict head exists for this pair, returns keys unchanged.
-
-        Args:
-            src: Source region name.
-            dst: Destination region name.
-            keys: (B, M, d_model) key tensor from held dst positions.
-
-        Returns:
-            (B, M, d_model) transformed key tensor.
-        """
-        key = _sanitize_conn_key(src, dst)
-        if key in self.predict_heads:
-            return self.predict_heads[key](keys)
-        return keys

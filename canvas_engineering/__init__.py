@@ -20,7 +20,6 @@ from canvas_engineering.action_heads import ActionHead
 from canvas_engineering.sharpening import SharpeningSchedule
 from canvas_engineering.connectivity import (
     Connection, CanvasTopology, TemporalFill,
-    TemporalFillPredictor, TemporalFillModule,
 )
 from canvas_engineering.schema import CanvasSchema
 from canvas_engineering.attention import (
@@ -74,8 +73,6 @@ __all__ = [
     "Connection",
     "CanvasTopology",
     "TemporalFill",
-    "TemporalFillPredictor",
-    "TemporalFillModule",
     "PeriodEmbedding",
     "Field",
     "LayoutStrategy",

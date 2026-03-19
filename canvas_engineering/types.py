@@ -598,7 +598,8 @@ def _apply_temporal(
             result.append(Connection(
                 src=c.src, dst=c.dst, weight=c.weight,
                 t_src=0, t_dst=0, fn=c.fn,
-                temporal_fill=c.temporal_fill, decay_halflife=c.decay_halflife,
+                temporal_fill=c.temporal_fill,
+                interpolation_order=c.interpolation_order,
             ))
         elif policy.temporal == "causal":
             if c.src == c.dst:
@@ -606,19 +607,22 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=0, fn=c.fn,
-                    temporal_fill=c.temporal_fill, decay_halflife=c.decay_halflife,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
-                    temporal_fill=c.temporal_fill, decay_halflife=c.decay_halflife,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
             else:
                 # Cross-connection: prev-frame only
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
-                    temporal_fill=c.temporal_fill, decay_halflife=c.decay_halflife,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
     return result
 
@@ -629,7 +633,7 @@ def _deduplicate(connections: List[Connection]) -> List[Connection]:
     result = []
     for c in connections:
         key = (c.src, c.dst, c.weight, c.t_src, c.t_dst, c.fn,
-               c.temporal_fill, c.decay_halflife)
+               c.temporal_fill, c.interpolation_order)
         if key not in seen:
             seen.add(key)
             result.append(c)

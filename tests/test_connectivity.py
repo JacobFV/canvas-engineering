@@ -589,37 +589,6 @@ def test_temporal_fill_drop():
     assert mask[fast_t1[0], slow_t0[0]].item() == 0.0
 
 
-def test_temporal_fill_decay():
-    """DECAY: connection weight decays exponentially with staleness."""
-    import math
-    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
-        "fast": (0, 4, 0, 1, 0, 1),
-        "slow": (0, 1, 1, 2, 0, 1),
-    })
-    halflife = 2.0
-    topo = CanvasTopology(connections=[
-        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
-                   temporal_fill=TemporalFill.DECAY, decay_halflife=halflife)
-    ])
-    mask = topo.to_attention_mask(layout)
-
-    fast_t0 = layout.region_indices_at_t("fast", 0)
-    slow_t0 = layout.region_indices_at_t("slow", 0)
-
-    # ref=0: staleness=0, direct connection → weight=1.0
-    assert mask[fast_t0[0], slow_t0[0]].item() == 1.0
-
-    # ref=1: staleness=1, weight = exp(-1 * ln2 / 2) ≈ 0.707
-    fast_t1 = layout.region_indices_at_t("fast", 1)
-    expected_w1 = math.exp(-1 * math.log(2) / halflife)
-    assert abs(mask[fast_t1[0], slow_t0[0]].item() - expected_w1) < 1e-5
-
-    # ref=2: staleness=2, weight = exp(-2 * ln2 / 2) = 0.5 (one half-life)
-    fast_t2 = layout.region_indices_at_t("fast", 2)
-    expected_w2 = math.exp(-2 * math.log(2) / halflife)
-    assert abs(mask[fast_t2[0], slow_t0[0]].item() - expected_w2) < 1e-5
-    assert abs(expected_w2 - 0.5) < 1e-5  # sanity: at halflife, weight = 0.5
-
 
 def test_temporal_fill_interpolate_both_endpoints():
     """INTERPOLATE: lerp between past and future when both available."""
@@ -687,24 +656,6 @@ def test_temporal_fill_interpolate_only_past():
     assert resolved[0][1] == 1.0  # full weight (hold fallback)
 
 
-def test_temporal_fill_predict_same_mask_as_hold():
-    """PREDICT: generates the same mask as HOLD (predict head applied separately)."""
-    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
-        "fast": (0, 4, 0, 1, 0, 1),
-        "slow": (0, 1, 1, 2, 0, 1),
-    })
-    topo_hold = CanvasTopology(connections=[
-        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
-                   temporal_fill=TemporalFill.HOLD)
-    ])
-    topo_predict = CanvasTopology(connections=[
-        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
-                   temporal_fill=TemporalFill.PREDICT)
-    ])
-    mask_hold = topo_hold.to_attention_mask(layout)
-    mask_predict = topo_predict.to_attention_mask(layout)
-    assert torch.equal(mask_hold, mask_predict)
-
 
 def test_temporal_fill_interpolate_period_mismatch():
     """INTERPOLATE with period-mismatched regions: real-time gaps enable lerp.
@@ -770,131 +721,87 @@ def test_temporal_fill_hold_period_mismatch():
     assert mask[fast_t5[0], slow_t1[0]].item() == 1.0  # held to slow canvas t=1 (real 4)
 
 
-def test_temporal_fill_decay_period_mismatch():
-    """DECAY with period-mismatched regions: weight decays in real time."""
-    import math
-    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
-        "fast": (0, 8, 0, 1, 0, 1),
-        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),
-    })
-    halflife = 2.0
-    topo = CanvasTopology(connections=[
-        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
-                   temporal_fill=TemporalFill.DECAY, decay_halflife=halflife)
-    ])
-    mask = topo.to_attention_mask(layout)
-
-    fast_t2 = layout.region_indices_at_t("fast", 2)
-    slow_t0 = layout.region_indices_at_t("slow", 0)
-
-    # fast t=2 (real 2): staleness in real time = 2
-    expected = math.exp(-2 * math.log(2) / halflife)
-    assert abs(mask[fast_t2[0], slow_t0[0]].item() - expected) < 1e-5
-
 
 def test_temporal_fill_connection_defaults():
-    """Connection defaults to HOLD fill and 10.0 halflife."""
+    """Connection defaults to HOLD fill and interpolation_order=1; no decay_halflife."""
     c = Connection(src="a", dst="b")
     assert c.temporal_fill == TemporalFill.HOLD
-    assert c.decay_halflife == 10.0
+    assert c.interpolation_order == 1
+    assert not hasattr(c, "decay_halflife")
 
 
 def test_temporal_fill_summary_reports_fill_modes():
     """Summary should report fill mode counts for temporal connections."""
     topo = CanvasTopology(connections=[
         Connection(src="a", dst="b", t_src=0, t_dst=-1, temporal_fill=TemporalFill.HOLD),
-        Connection(src="a", dst="b", t_src=0, t_dst=0, temporal_fill=TemporalFill.DECAY),
+        Connection(src="a", dst="b", t_src=0, t_dst=0, temporal_fill=TemporalFill.INTERPOLATE),
         Connection(src="b", dst="a", t_src=0, t_dst=-1, temporal_fill=TemporalFill.HOLD),
     ])
     s = topo.summary()
     assert "hold=2" in s
-    assert "decay=1" in s
+    assert "interpolate=1" in s
 
 
 def test_causal_temporal_with_fill_mode():
     """causal_temporal constructor propagates fill mode."""
     topo = CanvasTopology.causal_temporal(
-        ["a", "b"], temporal_fill=TemporalFill.DECAY
+        ["a", "b"], temporal_fill=TemporalFill.INTERPOLATE
     )
     for c in topo.connections:
-        assert c.temporal_fill == TemporalFill.DECAY
+        assert c.temporal_fill == TemporalFill.INTERPOLATE
 
 
-# ── TemporalFillPredictor tests ──────────────────────────────────────
+def test_interpolation_order2_idw_weights():
+    """INTERPOLATE with order=2: IDW uses 1/dist^2 weights over nearest anchors.
 
-from canvas_engineering import TemporalFillPredictor, TemporalFillModule
+    slow region has 3 anchors at real times 0, 4, 8. order=2 means we take
+    up to order+1=3 nearest anchors and weight them by 1/dist^2, normalized.
 
+    For order=2, at real time 2 (missing):
+      - all 3 anchors available: t=0 (dist=2), t=4 (dist=2), t=8 (dist=6)
+      - raw weights: 1/4, 1/4, 1/36
+      - total = 9/36 + 9/36 + 1/36 = 19/36
+      - normalized: 9/19, 9/19, 1/19
 
-def test_predictor_starts_as_identity():
-    """TemporalFillPredictor should start as identity (zero-init output)."""
-    pred = TemporalFillPredictor(d_model=32)
-    x = torch.randn(2, 4, 32)
-    out = pred(x)
-    assert out.shape == x.shape
-    # Output should be very close to input (residual with zero-init correction)
-    assert torch.allclose(out, x, atol=1e-5)
+    For order=2, at real time 6 (missing):
+      - all 3 anchors: t=4 (dist=2), t=8 (dist=2), t=0 (dist=6)
+      - same weight pattern: 9/19, 9/19, 1/19
+    """
+    from canvas_engineering.connectivity import _resolve_temporal_fill
 
+    # slow has real times 0, 4, 8
+    dst_t_cache = {0: [10], 4: [14], 8: [18]}
+    conn = Connection(
+        src="fast", dst="slow", t_src=0, t_dst=0,
+        temporal_fill=TemporalFill.INTERPOLATE,
+        interpolation_order=2,
+    )
 
-def test_predictor_gradient_flows():
-    """TemporalFillPredictor should have gradients after backward."""
-    pred = TemporalFillPredictor(d_model=16)
-    x = torch.randn(1, 3, 16, requires_grad=True)
-    out = pred(x)
-    loss = out.sum()
-    loss.backward()
-    # Gradients should exist on the net parameters
-    assert pred.net[0].weight.grad is not None
+    # Query at real time 2 (missing): all 3 anchors within order+1=3 slots
+    # sorted by dist: t=0(dist=2), t=4(dist=2), t=8(dist=6)
+    # raw_weights: 1/4, 1/4, 1/36 → total=19/36 → normalized: 9/19, 9/19, 1/19
+    resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=2, max_T=12)
+    assert len(resolved) == 3
+    weights = {tuple(idxs): w for idxs, w in resolved}
+    expected_close = 9.0 / 19.0
+    expected_far = 1.0 / 19.0
+    assert abs(weights[(10,)] - expected_close) < 1e-5, weights
+    assert abs(weights[(14,)] - expected_close) < 1e-5, weights
+    assert abs(weights[(18,)] - expected_far) < 1e-5, weights
 
+    # Query at real time 6 (missing): sorted: t=4(dist=2), t=8(dist=2), t=0(dist=6)
+    # same weight pattern
+    resolved6 = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=6, max_T=12)
+    assert len(resolved6) == 3
+    w_map = {tuple(idxs): w for idxs, w in resolved6}
+    assert abs(w_map[(14,)] - expected_close) < 1e-5, w_map
+    assert abs(w_map[(18,)] - expected_close) < 1e-5, w_map
+    assert abs(w_map[(10,)] - expected_far) < 1e-5, w_map
 
-def test_fill_module_creates_predict_heads():
-    """TemporalFillModule creates heads only for PREDICT connections."""
-    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
-        "a": (0, 4, 0, 1, 0, 1),
-        "b": (0, 4, 1, 2, 0, 1),
-    })
-    topo = CanvasTopology(connections=[
-        Connection(src="a", dst="b", t_src=0, t_dst=-1,
-                   temporal_fill=TemporalFill.PREDICT),
-        Connection(src="b", dst="a", t_src=0, t_dst=-1,
-                   temporal_fill=TemporalFill.HOLD),  # no head for this
-    ])
-    module = topo.build_fill_module(layout, d_model=16)
-    assert module.has_predict_head("a", "b")
-    assert not module.has_predict_head("b", "a")
-
-
-def test_fill_module_transform_keys():
-    """TemporalFillModule.transform_keys applies predict head."""
-    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
-        "a": (0, 4, 0, 1, 0, 1),
-        "b": (0, 4, 1, 2, 0, 1),
-    })
-    topo = CanvasTopology(connections=[
-        Connection(src="a", dst="b", t_src=0, t_dst=-1,
-                   temporal_fill=TemporalFill.PREDICT),
-    ])
-    module = topo.build_fill_module(layout, d_model=16)
-    keys = torch.randn(2, 4, 16)
-    transformed = module.transform_keys("a", "b", keys)
-    assert transformed.shape == keys.shape
-    # At init, should be near-identity
-    assert torch.allclose(transformed, keys, atol=1e-5)
-
-
-def test_fill_module_no_head_passthrough():
-    """transform_keys passes through when no predict head exists."""
-    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
-        "a": (0, 4, 0, 1, 0, 1),
-        "b": (0, 4, 1, 2, 0, 1),
-    })
-    topo = CanvasTopology(connections=[
-        Connection(src="a", dst="b", t_src=0, t_dst=-1,
-                   temporal_fill=TemporalFill.HOLD),
-    ])
-    module = topo.build_fill_module(layout, d_model=16)
-    keys = torch.randn(2, 4, 16)
-    result = module.transform_keys("a", "b", keys)
-    assert torch.equal(result, keys)
+    # Query at existing real time 4 → direct connection, weight=1.0
+    resolved_direct = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=4, max_T=12)
+    assert len(resolved_direct) == 1
+    assert resolved_direct[0][1] == 1.0
 
 
 if __name__ == "__main__":

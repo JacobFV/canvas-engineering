@@ -6,9 +6,7 @@ masked attention with heterogeneous per-edge computation.
 
 Temporal fill modes are fully integrated: when a dst region has no
 positions at the requested timestep, the connection's temporal_fill
-mode determines how to resolve the dst (HOLD, INTERPOLATE, DECAY,
-PREDICT, or DROP). For PREDICT connections, the fill module's learned
-predict heads transform key/value tensors before attention.
+mode determines how to resolve the dst (HOLD, INTERPOLATE, or DROP).
 
 Usage:
     from canvas_engineering import CanvasTopology, CanvasLayout
@@ -38,7 +36,6 @@ from canvas_engineering.connectivity import (
     CanvasTopology,
     Connection,
     TemporalFill,
-    TemporalFillModule,
     _resolve_temporal_fill,
 )
 
@@ -50,10 +47,9 @@ class AttentionDispatcher(nn.Module):
       1. Extract src/dst position indices from layout
       2. Gather queries from src positions, keys/values from dst positions
       3. Apply temporal fill logic for cross-frequency connections
-      4. For PREDICT fill, transform keys/values via learned predict head
-      5. Run the resolved attention function
-      6. Scale by connection weight
-      7. Scatter-add results back to output
+      4. Run the resolved attention function
+      5. Scale by connection weight
+      6. Scatter-add results back to output
 
     Multiple connections writing to the same src region accumulate
     additively and are normalized by the total incoming weight.
@@ -66,9 +62,6 @@ class AttentionDispatcher(nn.Module):
         dropout: Dropout rate.
         skip_temporal: If True, ignore temporal constraints (t_src/t_dst)
             and treat all connections as dense-in-time.
-        fill_module: Optional TemporalFillModule for PREDICT connections.
-            If None and the topology has PREDICT connections, one is
-            auto-created.
     """
 
     def __init__(
@@ -79,7 +72,6 @@ class AttentionDispatcher(nn.Module):
         n_heads: int = 4,
         dropout: float = 0.0,
         skip_temporal: bool = False,
-        fill_module: Optional[TemporalFillModule] = None,
     ):
         super().__init__()
         self.topology = topology
@@ -143,17 +135,6 @@ class AttentionDispatcher(nn.Module):
                 self._incoming_weight.get(src, 0.0) + weight
             )
 
-        # Build or adopt fill module for PREDICT connections
-        has_predict = any(
-            c.temporal_fill == TemporalFill.PREDICT
-            for c in topology.connections
-        )
-        if fill_module is not None:
-            self.fill_module = fill_module
-        elif has_predict:
-            self.fill_module = topology.build_fill_module(layout, d_model)
-        else:
-            self.fill_module = None
 
     def _get_device_idx(
         self, name: str, device: torch.device
@@ -248,18 +229,6 @@ class AttentionDispatcher(nn.Module):
                             queries = x[:, s_idx]
                             keys = x[:, d_idx]
                             values = x[:, d_idx]
-
-                            # Apply predict head for PREDICT connections
-                            if (
-                                conn_obj.temporal_fill == TemporalFill.PREDICT
-                                and self.fill_module is not None
-                            ):
-                                keys = self.fill_module.transform_keys(
-                                    src, dst, keys,
-                                )
-                                values = self.fill_module.transform_keys(
-                                    src, dst, values,
-                                )
 
                             attended = attn_fn(queries, keys, values)
                             output[:, s_idx] += attended * w

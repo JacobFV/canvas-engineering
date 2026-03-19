@@ -43,8 +43,6 @@ from temporal_fill_harness import (
     train_fill_mode,
     make_layout_and_topology,
     generate_stale_copy_data,
-    generate_decay_relevance_data,
-    generate_drift_data,
     generate_interpolation_data,
     RESULTS_DIR,
 )
@@ -59,40 +57,16 @@ SEED = 42
 
 @pytest.fixture(scope="module")
 def stale_copy_results():
-    """Train all fill modes on the stale copy task (shared across tests)."""
+    """Train DROP, HOLD, INTERPOLATE on the stale copy task (shared across tests)."""
     return run_comparison(
         task_name="stale_copy",
         data_fn=generate_stale_copy_data,
+        fill_modes=[TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE],
         n_steps=N_STEPS,
         d_model=D_MODEL,
         seed=SEED,
     )
 
-
-@pytest.fixture(scope="module")
-def decay_results():
-    """Train HOLD, DROP, DECAY on the decay relevance task."""
-    return run_comparison(
-        task_name="decay_relevance",
-        data_fn=generate_decay_relevance_data,
-        fill_modes=[TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.DECAY],
-        n_steps=N_STEPS,
-        d_model=D_MODEL,
-        seed=SEED,
-    )
-
-
-@pytest.fixture(scope="module")
-def drift_results():
-    """Train HOLD, PREDICT on the predictable drift task. More steps for PREDICT to learn."""
-    return run_comparison(
-        task_name="drift",
-        data_fn=generate_drift_data,
-        fill_modes=[TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.PREDICT],
-        n_steps=300,
-        d_model=D_MODEL,
-        seed=SEED,
-    )
 
 
 @pytest.fixture(scope="module")
@@ -133,16 +107,6 @@ class TestStaleCopy:
             "HOLD ({:.4f}) should beat DROP ({:.4f})".format(hold_loss, drop_loss)
         )
 
-    def test_predict_competitive_with_hold(self, stale_copy_results):
-        """PREDICT should be at most slightly worse than HOLD (starts as identity)."""
-        hold_loss = stale_copy_results["hold"]["final_loss"]
-        predict_loss = stale_copy_results["predict"]["final_loss"]
-        # PREDICT may be slightly worse due to extra parameters, but not 2x worse
-        assert predict_loss < hold_loss * 2.0, (
-            "PREDICT ({:.4f}) should be competitive with HOLD ({:.4f})".format(
-                predict_loss, hold_loss)
-        )
-
     def test_interpolate_beats_drop(self, stale_copy_results):
         """INTERPOLATE should beat DROP (provides some info at all frames)."""
         interp_loss = stale_copy_results["interpolate"]["final_loss"]
@@ -179,57 +143,7 @@ class TestStaleCopy:
                 assert "step" in first
 
 
-# ── Task 2: Decay Relevance ─────────────────────────────────────────
-
-class TestDecayRelevance:
-    """Signal decays with staleness. DECAY's prior matches the task."""
-
-    def test_decay_beats_hold(self, decay_results):
-        """DECAY should outperform HOLD when the signal actually decays."""
-        decay_loss = decay_results["decay"]["final_loss"]
-        hold_loss = decay_results["hold"]["final_loss"]
-        assert decay_loss < hold_loss, (
-            "DECAY ({:.4f}) should beat HOLD ({:.4f}) on a decaying signal".format(
-                decay_loss, hold_loss)
-        )
-
-    def test_hold_beats_drop(self, decay_results):
-        """HOLD should still beat DROP (some info is better than none)."""
-        hold_loss = decay_results["hold"]["final_loss"]
-        drop_loss = decay_results["drop"]["final_loss"]
-        assert hold_loss < drop_loss, (
-            "HOLD ({:.4f}) should beat DROP ({:.4f})".format(hold_loss, drop_loss)
-        )
-
-
-# ── Task 3: Predictable Drift ───────────────────────────────────────
-
-class TestPredictableDrift:
-    """Linear trend the predict head should extrapolate."""
-
-    def test_predict_beats_hold(self, drift_results):
-        """PREDICT should outperform HOLD on a linear drift task."""
-        predict_loss = drift_results["predict"]["final_loss"]
-        hold_loss = drift_results["hold"]["final_loss"]
-        assert predict_loss < hold_loss, (
-            "PREDICT ({:.4f}) should beat HOLD ({:.4f}) on linear drift".format(
-                predict_loss, hold_loss)
-        )
-
-    def test_predict_head_learns_nontrivial_correction(self, drift_results):
-        """The predict head's output layer should have non-zero weights after training."""
-        model = drift_results["predict"]["model"]
-        fm = model.dispatchers[0].fill_module
-        if fm is not None:
-            for key, head in fm.predict_heads.items():
-                out_norm = head.net[-1].weight.norm().item()
-                assert out_norm > 1e-4, (
-                    "Predict head '{}' output weight norm ({:.6f}) should be "
-                    "non-trivial after training on drift task".format(key, out_norm)
-                )
-
-
-# ── Task 4: Smooth Interpolation ────────────────────────────────────
+# ── Task 2: Smooth Interpolation ────────────────────────────────────
 
 class TestInterpolation:
     """Period-mismatched interpolation: INTERPOLATE lerps between slow updates.
@@ -267,6 +181,91 @@ class TestInterpolation:
                 "{} did not converge: initial={:.4f}, final={:.4f}".format(
                     mode_name, initial, final)
             )
+
+    def test_interpolation_order2_converges(self):
+        """INTERPOLATE with order=2 (IDW) should converge on the lerp task.
+
+        Uses a slow region with period=4 (real times 0, 4, 8) giving 3 anchor
+        points. order=2 IDW weights: 1/dist^2, normalized. Should converge
+        as well as or better than order=1 on a smooth signal.
+        """
+        from canvas_engineering.connectivity import _resolve_temporal_fill, Connection, TemporalFill
+
+        # Verify IDW weights are correct for the 3-anchor layout
+        # slow at real times 0, 4, 8; query at real time 2
+        dst_t_cache = {0: [0], 4: [4], 8: [8]}
+        conn = Connection(
+            src="fast", dst="slow", t_src=0, t_dst=0,
+            temporal_fill=TemporalFill.INTERPOLATE,
+            interpolation_order=2,
+        )
+        resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=2, max_T=12)
+        # nearest 3 anchors: (0, dist=2), (4, dist=2), (8, dist=6)
+        # raw_weights: 1/4, 1/4, 1/36 → total=19/36
+        # normalized: 9/19, 9/19, 1/19
+        assert len(resolved) == 3
+        weight_sum = sum(w for _, w in resolved)
+        assert abs(weight_sum - 1.0) < 1e-5, "IDW weights should sum to 1.0"
+
+        # Now train a small model with order=2 and check it converges
+        from canvas_engineering import CanvasLayout, RegionSpec, CanvasTopology
+        from canvas_engineering.dispatch import AttentionDispatcher
+        from temporal_fill_harness import TemporalFillModel, generate_interpolation_data
+
+        torch.manual_seed(SEED)
+        data = generate_interpolation_data(n_samples=256, d_model=D_MODEL,
+                                           n_fast_frames=8, slow_period=4, seed=SEED)
+
+        layout = CanvasLayout(
+            T=8, H=2, W=1, d_model=D_MODEL,
+            regions={
+                "fast": (0, 8, 0, 1, 0, 1),
+                "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),
+            },
+        )
+        topology = CanvasTopology(connections=[
+            Connection(src="fast", dst="fast", t_src=0, t_dst=0),
+            Connection(
+                src="fast", dst="slow", t_src=0, t_dst=0,
+                temporal_fill=TemporalFill.INTERPOLATE,
+                interpolation_order=2,
+            ),
+        ])
+
+        model = TemporalFillModel(
+            layout, topology, d_model=D_MODEL, n_heads=2, n_layers=2, dropout=0.0,
+        )
+        input_proj = torch.nn.Linear(D_MODEL, D_MODEL)
+        readout = torch.nn.Linear(D_MODEL, D_MODEL)
+        params = (list(model.parameters()) + list(input_proj.parameters()) +
+                  list(readout.parameters()))
+        opt = torch.optim.Adam(params, lr=1e-3)
+
+        slow_data = data["slow_data"]    # (N, 2, d_model)
+        fast_targets = data["fast_targets"]
+        n_samples = slow_data.shape[0]
+
+        losses = []
+        for step in range(N_STEPS):
+            idx = torch.randint(0, n_samples, (64,))
+            canvas = model.canvas.create_empty(64)
+            canvas = model.canvas.place(canvas, input_proj(slow_data[idx]), "slow")
+            output = model(canvas)
+            fast_out = model.canvas.extract(output, "fast")
+            predictions = readout(fast_out)
+            loss = ((predictions - fast_targets[idx]) ** 2).mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, 10.0)
+            opt.step()
+            losses.append(loss.item())
+
+        initial = sum(losses[:5]) / 5
+        final = sum(losses[-5:]) / 5
+        assert final < initial, (
+            "interpolation_order=2 did not converge: "
+            "initial={:.4f}, final={:.4f}".format(initial, final)
+        )
 
 
 # ── PeriodEmbedding discrimination ──────────────────────────────────
@@ -364,11 +363,8 @@ def main():
     base_dir.mkdir(parents=True, exist_ok=True)
 
     tasks = [
-        ("stale_copy", generate_stale_copy_data, None),
-        ("decay_relevance", generate_decay_relevance_data,
-         [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.DECAY]),
-        ("drift", generate_drift_data,
-         [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.PREDICT]),
+        ("stale_copy", generate_stale_copy_data,
+         [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE]),
         ("interpolation", lambda **kw: generate_interpolation_data(slow_period=4, **kw),
          [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE]),
     ]
@@ -409,16 +405,6 @@ def main():
     if "hold" in sc and "drop" in sc:
         ratio = sc["drop"]["final_loss"] / max(sc["hold"]["final_loss"], 1e-8)
         print("  Stale copy: HOLD {:.1f}x better than DROP".format(ratio))
-
-    dr = all_results.get("decay_relevance", {})
-    if "decay" in dr and "hold" in dr:
-        ratio = dr["hold"]["final_loss"] / max(dr["decay"]["final_loss"], 1e-8)
-        print("  Decay relevance: DECAY {:.1f}x better than HOLD".format(ratio))
-
-    dt = all_results.get("drift", {})
-    if "predict" in dt and "hold" in dt:
-        ratio = dt["hold"]["final_loss"] / max(dt["predict"]["final_loss"], 1e-8)
-        print("  Drift: PREDICT {:.1f}x better than HOLD".format(ratio))
 
     ip = all_results.get("interpolation", {})
     if "interpolate" in ip and "hold" in ip:
