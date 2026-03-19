@@ -706,6 +706,92 @@ def test_temporal_fill_predict_same_mask_as_hold():
     assert torch.equal(mask_hold, mask_predict)
 
 
+def test_temporal_fill_interpolate_period_mismatch():
+    """INTERPOLATE with period-mismatched regions: real-time gaps enable lerp.
+
+    fast (period=1) queries slow (period=4). slow has canvas frames 0,1
+    mapping to real times 0,4. At fast frame 2 (real time 2), INTERPOLATE
+    should lerp between slow real t=0 and real t=4 with 50/50 weights.
+    """
+    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),  # period=1, real times 0-7
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),  # real times 0,4
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.INTERPOLATE)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t0 = layout.region_indices_at_t("fast", 0)
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    fast_t3 = layout.region_indices_at_t("fast", 3)
+    slow_t0 = layout.region_indices_at_t("slow", 0)  # real time 0
+    slow_t1 = layout.region_indices_at_t("slow", 1)  # real time 4
+
+    # fast t=0 (real 0) → slow at real 0 exists → direct, weight=1.0
+    assert mask[fast_t0[0], slow_t0[0]].item() == 1.0
+
+    # fast t=2 (real 2) → slow at real 2 doesn't exist
+    # INTERPOLATE: past=real 0 (dist=2), future=real 4 (dist=2)
+    # w_past = 2/4 = 0.5, w_future = 2/4 = 0.5
+    assert abs(mask[fast_t2[0], slow_t0[0]].item() - 0.5) < 1e-5
+    assert abs(mask[fast_t2[0], slow_t1[0]].item() - 0.5) < 1e-5
+
+    # fast t=3 (real 3) → slow at real 3 doesn't exist
+    # INTERPOLATE: past=real 0 (dist=3), future=real 4 (dist=1)
+    # w_past = 1/4 = 0.25, w_future = 3/4 = 0.75
+    assert abs(mask[fast_t3[0], slow_t0[0]].item() - 0.25) < 1e-5
+    assert abs(mask[fast_t3[0], slow_t1[0]].item() - 0.75) < 1e-5
+
+
+def test_temporal_fill_hold_period_mismatch():
+    """HOLD with period-mismatched regions: holds most recent real-time value."""
+    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.HOLD)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    slow_t0 = layout.region_indices_at_t("slow", 0)  # real time 0
+    slow_t1 = layout.region_indices_at_t("slow", 1)  # real time 4
+
+    # fast t=2 (real 2): slow at real 2 doesn't exist → HOLD to real 0
+    assert mask[fast_t2[0], slow_t0[0]].item() == 1.0
+    assert mask[fast_t2[0], slow_t1[0]].item() == 0.0  # future, not held
+
+    # fast t=5 (real 5): slow at real 5 doesn't exist → HOLD to real 4
+    fast_t5 = layout.region_indices_at_t("fast", 5)
+    assert mask[fast_t5[0], slow_t1[0]].item() == 1.0  # held to slow canvas t=1 (real 4)
+
+
+def test_temporal_fill_decay_period_mismatch():
+    """DECAY with period-mismatched regions: weight decays in real time."""
+    import math
+    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),
+    })
+    halflife = 2.0
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.DECAY, decay_halflife=halflife)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    slow_t0 = layout.region_indices_at_t("slow", 0)
+
+    # fast t=2 (real 2): staleness in real time = 2
+    expected = math.exp(-2 * math.log(2) / halflife)
+    assert abs(mask[fast_t2[0], slow_t0[0]].item() - expected) < 1e-5
+
+
 def test_temporal_fill_connection_defaults():
     """Connection defaults to HOLD fill and 10.0 halflife."""
     c = Connection(src="a", dst="b")

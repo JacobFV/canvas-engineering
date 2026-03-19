@@ -115,10 +115,15 @@ class AttentionDispatcher(nn.Module):
         # Pre-compute per-timestep indices for temporal connections
         self._region_t_idx: Dict[str, Dict[int, torch.Tensor]] = {}
         self._region_t_idx_lists: Dict[str, Dict[int, List[int]]] = {}
+        # Real-time indexed cache for period-aware fill resolution
+        self._region_real_t_lists: Dict[str, Dict[int, List[int]]] = {}
+        self._max_real_T = layout.T
         if topology.has_temporal_constraints and not skip_temporal:
             for name in layout.regions:
+                spec = layout.region_spec(name)
                 self._region_t_idx[name] = {}
                 self._region_t_idx_lists[name] = {}
+                self._region_real_t_lists[name] = {}
                 for t in layout.region_timesteps(name):
                     idx = layout.region_indices_at_t(name, t)
                     if idx:
@@ -126,6 +131,10 @@ class AttentionDispatcher(nn.Module):
                             idx, dtype=torch.long
                         )
                         self._region_t_idx_lists[name][t] = idx
+                        real_t = t * spec.period
+                        self._region_real_t_lists[name][real_t] = idx
+                        if real_t + 1 > self._max_real_T:
+                            self._max_real_T = real_t + 1
 
         # Pre-compute incoming weight sum per region for normalization
         self._incoming_weight: Dict[str, float] = {}
@@ -218,12 +227,17 @@ class AttentionDispatcher(nn.Module):
                     if len(s_idx) == 0:
                         continue
 
-                    # Resolve dst indices with temporal fill
+                    # Resolve dst indices with temporal fill (real-time space)
                     if t_dst_off is not None:
-                        abs_dst = ref + t_dst_off
-                        dst_t_lists = self._region_t_idx_lists.get(dst, {})
+                        if t_src_off is not None:
+                            src_period = self.layout.region_spec(src).period
+                        else:
+                            src_period = 1
+                        target_real = (ref + t_dst_off) * src_period
+                        dst_real_lists = self._region_real_t_lists.get(dst, {})
                         resolved = _resolve_temporal_fill(
-                            conn_obj, dst_t_lists, abs_dst, self.layout.T,
+                            conn_obj, dst_real_lists, target_real,
+                            self._max_real_T,
                         )
 
                         for dst_indices, w in resolved:

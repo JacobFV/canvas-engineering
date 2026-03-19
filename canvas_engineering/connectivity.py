@@ -422,12 +422,28 @@ class CanvasTopology:
         for name in layout.regions:
             idx_cache[name] = layout.region_indices(name)
 
-        # Cache per-timestep indices
+        # Cache per-timestep indices (canvas frame space)
         t_idx_cache: Dict[str, Dict[int, List[int]]] = {}
         for name in layout.regions:
             t_idx_cache[name] = {}
             for t in layout.region_timesteps(name):
                 t_idx_cache[name][t] = layout.region_indices_at_t(name, t)
+
+        # Cache per-region real-time indices for period-aware fill resolution.
+        # Maps real_time → position_indices, exposing natural gaps between
+        # updates of slow-period regions (e.g. period=4 → real times {0,4,8,...}).
+        real_t_idx_cache: Dict[str, Dict[int, List[int]]] = {}
+        max_real_T = 0
+        for name in layout.regions:
+            spec = layout.region_spec(name)
+            real_t_idx_cache[name] = {}
+            for canvas_t in layout.region_timesteps(name):
+                real_t = canvas_t * spec.period
+                real_t_idx_cache[name][real_t] = layout.region_indices_at_t(name, canvas_t)
+                if real_t + 1 > max_real_T:
+                    max_real_T = real_t + 1
+        if max_real_T == 0:
+            max_real_T = layout.T
 
         for conn in self.connections:
             if conn.src not in idx_cache or conn.dst not in idx_cache:
@@ -442,22 +458,28 @@ class CanvasTopology:
                         mask[si, di] = max(mask[si, di].item(), conn.weight)
 
             elif conn.t_dst is not None:
-                # dst is temporally constrained — temporal fill applies
-                dst_t = t_idx_cache.get(conn.dst, {})
+                # dst is temporally constrained — temporal fill applies.
+                # Resolve in real-time space so period-mismatched regions
+                # expose their natural inter-update gaps to INTERPOLATE/DECAY.
+                dst_real = real_t_idx_cache.get(conn.dst, {})
                 for ref in range(layout.T):
-                    # Resolve src positions
+                    # Resolve src positions (canvas frame space)
                     if conn.t_src is not None:
                         abs_src = ref + conn.t_src
                         src_at_t = t_idx_cache[conn.src].get(abs_src, [])
+                        src_period = layout.region_spec(conn.src).period
                     else:
                         src_at_t = idx_cache[conn.src]
+                        src_period = 1
 
                     if not src_at_t:
                         continue
 
-                    # Resolve dst positions with temporal fill
-                    abs_dst = ref + conn.t_dst
-                    resolved = _resolve_temporal_fill(conn, dst_t, abs_dst, layout.T)
+                    # Convert target to real time for period-aware fill
+                    target_real = (ref + conn.t_dst) * src_period
+                    resolved = _resolve_temporal_fill(
+                        conn, dst_real, target_real, max_real_T,
+                    )
                     for dst_indices, w in resolved:
                         for si in src_at_t:
                             for di in dst_indices:

@@ -251,36 +251,34 @@ def generate_drift_data(
     return {"slow_data": v0, "fast_targets": fast_targets, "slopes": slopes}
 
 
-def generate_two_anchor_interpolation_data(
+def generate_interpolation_data(
     n_samples: int,
     d_model: int,
     n_fast_frames: int = 8,
+    slow_period: int = 4,
     seed: int = 42,
 ) -> Dict[str, torch.Tensor]:
-    """Two-anchor interpolation task: fast region should lerp between two slow values.
+    """Interpolation task: fast region should lerp between slow region updates.
 
-    slow_start holds value v0 at t=0.
-    slow_end holds value v1 at t=(n_fast_frames-1).
-    The fast region's target at time k is lerp(v0, v1, k/(n_fast_frames-1)).
-
-    This tests whether INTERPOLATE's weighted access to both anchors
-    helps the model learn the linear blend.
+    The slow region updates at real times 0 and slow_period. Its value at
+    real time 0 is v0 and at real time slow_period is v1. The fast region's
+    target at real time k is lerp(v0, v1, k/slow_period) for k in [0, slow_period],
+    clamped beyond that.
 
     Returns:
-        dict with 'slow_start_data', 'slow_end_data', 'fast_targets'.
+        dict with 'slow_data' (N, 2, d_model) and 'fast_targets'.
     """
     gen = torch.Generator().manual_seed(seed)
     v0 = torch.randn(n_samples, 1, d_model, generator=gen)
     v1 = torch.randn(n_samples, 1, d_model, generator=gen)
+    # Slow region has 2 canvas frames: canvas t=0 → v0, canvas t=1 → v1
+    slow_data = torch.cat([v0, v1], dim=1)  # (N, 2, d_model)
+    # Fast targets: lerp between v0 and v1 across real time
     fast_targets = torch.zeros(n_samples, n_fast_frames, d_model)
     for k in range(n_fast_frames):
-        alpha = k / max(n_fast_frames - 1, 1)
+        alpha = min(k / slow_period, 1.0)
         fast_targets[:, k] = v0[:, 0] * (1 - alpha) + v1[:, 0] * alpha
-    return {
-        "slow_start_data": v0,
-        "slow_end_data": v1,
-        "fast_targets": fast_targets,
-    }
+    return {"slow_data": slow_data, "fast_targets": fast_targets}
 
 
 # ── Training ─────────────────────────────────────────────────────────
@@ -290,27 +288,37 @@ def make_layout_and_topology(
     fill_mode: TemporalFill,
     d_model: int = 32,
     n_fast_frames: int = 8,
+    slow_period: int = 1,
 ) -> Tuple[CanvasLayout, CanvasTopology]:
     """Create a layout with fast + slow regions and a fill-mode connection.
 
-    The slow region exists only at canvas t=0 (one frame).
-    The fast region spans all n_fast_frames canvas frames.
-    The connection from fast→slow uses the specified fill mode.
+    Args:
+        slow_period: Period of the slow region. When >1, the slow region's
+            canvas frames map to non-adjacent real times, creating natural
+            gaps that INTERPOLATE/DECAY can exploit.
+            With slow_period=1, slow exists only at canvas t=0 (one frame).
+            With slow_period=4, slow has 2 canvas frames mapping to real
+            times 0 and 4, with gaps at real times 1-3 and 5-7.
     """
+    if slow_period > 1:
+        # Slow region spans 2 canvas frames, mapping to real times 0 and slow_period
+        slow_n_frames = 2
+        slow_spec = RegionSpec(bounds=(0, slow_n_frames, 1, 2, 0, 1), period=slow_period)
+    else:
+        slow_spec = RegionSpec(bounds=(0, 1, 1, 2, 0, 1), period=1)
+
     layout = CanvasLayout(
         T=n_fast_frames,
         H=2,
         W=1,
         d_model=d_model,
         regions={
-            "fast": (0, n_fast_frames, 0, 1, 0, 1),   # 1 position per frame
-            "slow": (0, 1, 1, 2, 0, 1),                # 1 position, only t=0
+            "fast": (0, n_fast_frames, 0, 1, 0, 1),
+            "slow": slow_spec,
         },
     )
     topology = CanvasTopology(connections=[
-        # Fast self-attention (same frame)
         Connection(src="fast", dst="fast", t_src=0, t_dst=0),
-        # Fast queries slow — this is where fill mode matters
         Connection(
             src="fast", dst="slow", t_src=0, t_dst=0,
             temporal_fill=fill_mode,
@@ -366,6 +374,7 @@ def train_fill_mode(
     batch_size: int = 64,
     seed: int = 42,
     logger: Optional[ResultLogger] = None,
+    slow_period: int = 1,
 ) -> Tuple[nn.Module, List[float]]:
     """Train a TemporalFillModel on a synthetic task.
 
@@ -374,7 +383,7 @@ def train_fill_mode(
     """
     torch.manual_seed(seed)
 
-    layout, topology = make_layout_and_topology(fill_mode, d_model, n_fast_frames)
+    layout, topology = make_layout_and_topology(fill_mode, d_model, n_fast_frames, slow_period)
     model = TemporalFillModel(
         layout, topology, d_model=d_model, n_heads=2, n_layers=2, dropout=0.0,
     )
@@ -590,6 +599,7 @@ def run_comparison(
     d_model: int = 32,
     seed: int = 42,
     run_dir: Optional[Path] = None,
+    slow_period: int = 1,
 ) -> Dict[str, Dict]:
     """Train all fill modes on a task and return results for comparison.
 
@@ -615,6 +625,7 @@ def run_comparison(
             d_model=d_model,
             seed=seed,
             logger=logger,
+            slow_period=slow_period,
         )
         logger.close()
         results[mode.value] = {

@@ -41,12 +41,11 @@ from temporal_fill_harness import (
     TemporalFillModel,
     run_comparison,
     train_fill_mode,
-    train_two_anchor,
     make_layout_and_topology,
     generate_stale_copy_data,
     generate_decay_relevance_data,
     generate_drift_data,
-    generate_two_anchor_interpolation_data,
+    generate_interpolation_data,
     RESULTS_DIR,
 )
 
@@ -98,30 +97,22 @@ def drift_results():
 
 @pytest.fixture(scope="module")
 def interpolation_results():
-    """Train HOLD, DROP, INTERPOLATE on the two-anchor interpolation task.
+    """Train HOLD, DROP, INTERPOLATE on a period-mismatched interpolation task.
 
-    Uses two slow anchor regions (start and end) so INTERPOLATE can
-    meaningfully lerp between them for intermediate fast frames.
+    Slow region has period=4 (canvas frames 0,1 → real times 0,4).
+    Fast region has period=1 (real times 0-7). INTERPOLATE can now
+    genuinely lerp between slow's real-time updates for intermediate
+    fast frames (real times 1-3).
     """
-    data = generate_two_anchor_interpolation_data(
-        n_samples=512, d_model=D_MODEL, seed=SEED,
+    return run_comparison(
+        task_name="interpolation",
+        data_fn=lambda **kw: generate_interpolation_data(slow_period=4, **kw),
+        fill_modes=[TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE],
+        n_steps=N_STEPS,
+        d_model=D_MODEL,
+        seed=SEED,
+        slow_period=4,
     )
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    run_dir = RESULTS_DIR / "{}_interpolation".format(ts)
-    results = {}
-    for mode in [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE]:
-        logger = ResultLogger("interpolation", mode.value, run_dir=run_dir)
-        model, losses = train_two_anchor(
-            fill_mode=mode, data=data, n_steps=N_STEPS,
-            d_model=D_MODEL, seed=SEED, logger=logger,
-        )
-        logger.close()
-        final_loss = sum(losses[-10:]) / 10 if len(losses) >= 10 else losses[-1]
-        results[mode.value] = {
-            "model": model, "losses": losses, "logger": logger,
-            "final_loss": final_loss,
-        }
-    return results
 
 
 # ── Task 1: Stale Copy ──────────────────────────────────────────────
@@ -240,21 +231,30 @@ class TestPredictableDrift:
 
 # ── Task 4: Smooth Interpolation ────────────────────────────────────
 
-class TestTwoAnchorInterpolation:
-    """Two-anchor lerp task: fast region should blend between start/end slow values.
+class TestInterpolation:
+    """Period-mismatched interpolation: INTERPOLATE lerps between slow updates.
 
-    With two slow anchors at t=0 and t=last, INTERPOLATE gives the model
-    weighted access to both endpoints for intermediate fast frames. HOLD
-    only provides the past anchor (t=0), losing the future endpoint.
+    slow (period=4) has values at real times 0 and 4. Fast target at real
+    time k is lerp(v0, v1, k/4). INTERPOLATE gives the model weighted access
+    to both endpoints; HOLD only provides the past value.
     """
 
-    def test_hold_beats_drop(self, interpolation_results):
-        """HOLD should beat DROP (some info is better than none)."""
+    def test_interpolate_beats_hold(self, interpolation_results):
+        """INTERPOLATE should beat HOLD on a lerp target between two updates."""
+        interp_loss = interpolation_results["interpolate"]["final_loss"]
         hold_loss = interpolation_results["hold"]["final_loss"]
+        assert interp_loss < hold_loss, (
+            "INTERPOLATE ({:.4f}) should beat HOLD ({:.4f}) on lerp task".format(
+                interp_loss, hold_loss)
+        )
+
+    def test_interpolate_beats_drop(self, interpolation_results):
+        """INTERPOLATE should beat DROP."""
+        interp_loss = interpolation_results["interpolate"]["final_loss"]
         drop_loss = interpolation_results["drop"]["final_loss"]
-        assert hold_loss < drop_loss, (
-            "HOLD ({:.4f}) should beat DROP ({:.4f}) on two-anchor task".format(
-                hold_loss, drop_loss)
+        assert interp_loss < drop_loss, (
+            "INTERPOLATE ({:.4f}) should beat DROP ({:.4f})".format(
+                interp_loss, drop_loss)
         )
 
     def test_all_modes_converge(self, interpolation_results):
@@ -369,7 +369,7 @@ def main():
          [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.DECAY]),
         ("drift", generate_drift_data,
          [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.PREDICT]),
-        ("interpolation", generate_stale_copy_data,  # placeholder, two-anchor uses custom trainer
+        ("interpolation", lambda **kw: generate_interpolation_data(slow_period=4, **kw),
          [TemporalFill.DROP, TemporalFill.HOLD, TemporalFill.INTERPOLATE]),
     ]
 
