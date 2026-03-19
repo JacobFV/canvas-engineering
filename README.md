@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/canvas-engineering.svg)](https://pypi.org/project/canvas-engineering/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-95%2F95-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-239%2F239-brightgreen.svg)]()
 [![Docs](https://img.shields.io/badge/docs-jacobfv.github.io-blue.svg)](https://jacobfv.github.io/canvas-engineering/)
 
 > Prompt engineering structures what an LLM *sees*. **Canvas engineering** structures what a diffusion model *thinks in*. You declare which regions of latent space carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
@@ -282,6 +282,36 @@ Connection(src="thought", dst="thought", t_src=None, t_dst=None)
 
 The `causal_temporal` constructor gives you same-frame self-attention + previous-frame cross-attention for all regions — no future leakage, but full temporal context.
 
+### Temporal fill modes
+
+When regions run at different frequencies, a fast region (period=1) querying a slow region (period=4) will often find no value at the exact requested timestep. The `temporal_fill` parameter controls what happens:
+
+```python
+from canvas_engineering import TemporalFill
+
+# State: hold most recent value (default)
+Connection(src="daily", dst="quarterly_gdp", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.HOLD)
+
+# Events: don't hold stale alerts
+Connection(src="monitor", dst="alerts", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.DROP)
+
+# Smooth signals: interpolate between updates
+Connection(src="fast_ctrl", dst="temperature", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.INTERPOLATE, interpolation_order=2)
+```
+
+| Mode | Behavior | Use case |
+|------|----------|----------|
+| `HOLD` (default) | Use most recent past value | State — sensor readings, embeddings, positions |
+| `DROP` | No connection | Events — alerts, anomaly flags, sporadic signals |
+| `INTERPOLATE` | Weighted blend of surrounding values | Smooth signals with known update schedule |
+
+Fill resolution operates in **real-time space** — a slow region with `period=4` and 2 canvas frames maps to real times {0, 4}, creating natural gaps that INTERPOLATE exploits. For period=1 (default), behavior is unchanged.
+
+INTERPOLATE supports higher-order interpolation via `interpolation_order`: order=1 is linear lerp, order=N uses inverse-distance weighting over N+1 nearest anchors with weights `1/dist^N`. Always non-negative, no learned parameters.
+
 ## Attention function types
 
 Not all connections should use the same attention mechanism. A `Connection` can declare its `fn` — the type of function used for that edge. Regions can also set `default_attn` — a default for all outgoing connections. The schema declares *intent*; execution is backend-dependent.
@@ -340,7 +370,7 @@ Every connection function type represents a different theory of how information 
 | `perceiver` | Compression | O(NK) | Large dst regions compressed through bottleneck |
 | `pooling` | Compression | O(N+M) | Scalar/low-dim conditioning signals |
 | `copy` | Transfer | O(N) | Direct latent sharing, broadcast regions |
-| `mamba` | State-space | O(N) | Long temporal sequences, causal connections |
+| `mamba` | State-space | O(N) | Long temporal sequences with query-based readout |
 | `rwkv` | State-space | O(N) | Temporal connections with learned decay |
 | `hyena` | Convolution | O(N log N) | Sub-quadratic long-range via FFT |
 | `sparse_attention` | Sparse | O(NK) | Selective binding to specific positions |
@@ -348,6 +378,7 @@ Every connection function type represents a different theory of how information 
 | `none` | Meta | O(0) | Ablation — edge declared but disabled |
 | `random_fixed` | Meta | O(NK) | Baseline — does learned structure matter? |
 | `mixture` | Meta | O(NK) | MoE-style routing for multi-modal hubs |
+| `cogvideox` | Backbone | O(NM) | CogVideoX-native 3D-RoPE attention |
 
 ### Design recipes
 
@@ -479,9 +510,11 @@ The schema file is human-readable JSON. It declares everything needed to interpr
 | `CanvasLayout` | Declarative 3D canvas geometry with named regions |
 | `RegionSpec` | Per-region semantics: frequency, loss weight, output participation |
 | `SpatiotemporalCanvas` | Canvas tensor ops: `create_empty`, `place`, `extract` |
-| `Connection` | Single attention op with temporal offsets and function type (`fn`) |
+| `Connection` | Single attention op with temporal offsets, function type (`fn`), and fill mode |
 | `CanvasTopology` | Declarative DAG of attention ops with `resolve_fn()` dispatch |
-| `ATTENTION_TYPES` | Registry of 16 declared attention function types |
+| `TemporalFill` | Fill modes for cross-frequency connections: DROP, HOLD, INTERPOLATE |
+| `PeriodEmbedding` | Learned embedding indexed by log-bucketed temporal period |
+| `ATTENTION_TYPES` | Registry of 18 declared attention function types |
 | `transfer_distance()` | Cosine distance between semantic type embeddings |
 | `CanvasSchema` | Portable bundle: layout + topology + metadata, JSON-serializable |
 | `ActionHead` | MLP decoder: latent channels → robot actions |

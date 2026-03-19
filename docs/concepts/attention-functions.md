@@ -43,7 +43,7 @@ Connection(src="thought", dst="visual", fn="perceiver")
 
 | Type | Complexity | Description |
 |------|-----------|-------------|
-| **`mamba`** | O(N) | Selective state-space model (S6). Input-dependent gating over compressed state. Hardware-efficient for long temporal sequences. |
+| **`mamba`** | O(N) | Selective state-space model (S6). Input-dependent gating over compressed state with query-based readout — each query position attends to the SSM context sequence via scaled dot-product, enabling position-selective reading of the state. |
 | **`rwkv`** | O(N) | Linear attention with learned exponential decay. Recurrent formulation with position-dependent forgetting. Good for causal temporal connections. |
 | **`hyena`** | O(N log N) | Long convolution with data-dependent gating via FFT. Sub-quadratic alternative for very long sequences. |
 
@@ -61,6 +61,12 @@ Connection(src="thought", dst="visual", fn="perceiver")
 | **`none`** | O(0) | Edge exists in schema but is disabled. For ablation studies. |
 | **`random_fixed`** | O(NK) | Random sparse attention pattern, frozen at init. Baseline for measuring whether learned patterns matter. |
 | **`mixture`** | O(NK) | MoE-style learned routing. Each src position is routed to a subset of dst by a learned router. |
+
+### Backbone-native
+
+| Type | Complexity | Description |
+|------|-----------|-------------|
+| **`cogvideox`** | O(NM) | CogVideoX-native attention. Within the canvas `AttentionDispatcher` this is standard cross-attention. When a CogVideoX backbone is grafted via `graft_looped_blocks()`, the backbone's native 3D-RoPE multi-head attention supersedes this entirely. Use as `default_attn` on any region trained inside a CogVideoX transformer. |
 
 ## Design recipes
 
@@ -99,7 +105,7 @@ Connection(src="thought", dst="visual", fn="perceiver")
 
 ## Dispatch: from declaration to execution
 
-All 17 attention types are fully implemented as `nn.Module` classes in `canvas_engineering.attention`. The `AttentionDispatcher` routes each topology connection to its resolved function:
+All 18 attention types are fully implemented as `nn.Module` classes in `canvas_engineering.attention`. The `AttentionDispatcher` routes each topology connection to its resolved function:
 
 ```python
 from canvas_engineering import AttentionDispatcher
@@ -113,7 +119,7 @@ dispatcher = AttentionDispatcher(
 output = dispatcher(hidden_states)  # per-connection dispatch
 ```
 
-A frozen CogVideoX backbone runs all positions through the same blocks (full attention), so it can only honor `weight` modulation. A custom or scratch backbone can use `AttentionDispatcher` for true per-connection dispatch.
+A frozen CogVideoX backbone runs all positions through the same blocks (full attention), so it can only honor `weight` modulation. Use `default_attn="cogvideox"` on regions trained inside a CogVideoX transformer to signal this. A custom or scratch backbone can use `AttentionDispatcher` for true per-connection dispatch with temporal fill modes.
 
 Custom attention types can be registered at runtime:
 

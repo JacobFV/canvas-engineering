@@ -27,7 +27,8 @@ Large video diffusion models generate video. The **spatiotemporal canvas** exten
 - **`CanvasTopology`** — Directed graph of attention operations with temporal constraints and per-edge function types
 - **`CanvasSchema`** — Portable JSON-serializable bundle (layout + topology + metadata)
 - **`transfer_distance()`** — Cosine distance between semantic type embeddings estimates adapter cost
-- **16 attention function types** — From standard cross-attention to Mamba, Perceiver, RWKV, and more
+- **18 attention function types** — From standard cross-attention to Mamba, Perceiver, RWKV, CogVideoX-native, and more
+- **Temporal fill modes** — DROP, HOLD, INTERPOLATE with higher-order IDW for cross-frequency attention
 - **`graft_looped_blocks()`** — One-line grafting onto CogVideoX with 350K trainable params
 
 ## Install
@@ -51,5 +52,5 @@ All examples train real models and generate visualizations. No GPU required.
 - [Quick Start](getting-started/quickstart.md) — 30-line graft-and-train
 - [Canvas Types](concepts/canvas-types.md) — The compositional type system
 - [The Canvas](concepts/canvas.md) — How regions, frequency, and loss weighting work
-- [Attention Functions](concepts/attention-functions.md) — The full lineup of 16 function types
+- [Attention Functions](concepts/attention-functions.md) — The full lineup of 18 function types
 - [Design Recipes](recipes/robot.md) — Real-world schema patterns

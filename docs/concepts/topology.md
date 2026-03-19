@@ -36,6 +36,52 @@ CanvasTopology.causal_temporal(["obs", "act"]) # same-frame self + prev-frame cr
 | `0` | `-1` | Src at current frame queries dst at previous frame |
 | `None` | `0` | All src timesteps query dst at each reference frame |
 
+## Temporal fill modes
+
+When regions update at different frequencies (e.g., fast at period=1, slow at period=4), a fast region may query a slow region at a timestep where the slow region has no value. The `temporal_fill` parameter on `Connection` controls what happens:
+
+| Mode | Behavior | Use case |
+|------|----------|----------|
+| `TemporalFill.DROP` | No connection | Event signals — alerts, anomaly flags, one-shot observations |
+| `TemporalFill.HOLD` | Use most recent past value (default) | State signals — sensor readings, positions, embeddings |
+| `TemporalFill.INTERPOLATE` | Weighted blend of surrounding values | Smooth signals with known update schedule |
+
+```python
+from canvas_engineering import Connection, TemporalFill
+
+# State signal: hold the most recent GDP until the next quarterly release
+Connection(src="daily_market", dst="quarterly_gdp", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.HOLD)
+
+# Event signal: an alert fires once, don't hold it forever
+Connection(src="monitor", dst="alerts", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.DROP)
+
+# Smooth signal: interpolate temperature between hourly readings
+Connection(src="fast_control", dst="temperature", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.INTERPOLATE)
+```
+
+Fill resolution operates in **real-time space**: a slow region with `period=4` and 2 canvas frames maps to real times {0, 4}. A fast region at real time 2 sees the natural gap and can interpolate. For period=1 regions, real time equals canvas time — fully backward compatible.
+
+### Interpolation order
+
+`TemporalFill.INTERPOLATE` supports higher-order interpolation via `interpolation_order` on `Connection`:
+
+| Order | Method | Anchors used | Best for |
+|-------|--------|-------------|----------|
+| 1 (default) | Linear lerp | 2 (nearest past + future) | General purpose |
+| 2 | Inverse-distance weighting, 1/d² | 3 nearest | Smooth signals with curvature |
+| 3 | IDW, 1/d³ | 4 nearest | Very smooth signals |
+
+Weights are always non-negative and normalized. No learned parameters.
+
+```python
+Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+           temporal_fill=TemporalFill.INTERPOLATE,
+           interpolation_order=2)  # quadratic IDW
+```
+
 ## Attention mask compilation
 
 ```python
@@ -43,4 +89,4 @@ mask = topology.to_attention_mask(layout)  # (N, N) float tensor
 ops = topology.attention_ops(layout)       # [(src, dst, weight, fn), ...]
 ```
 
-The mask is compiled by iterating over connections, resolving temporal constraints, and setting `mask[i, j] = weight` for each (query_position, key_position) pair.
+The mask is compiled by iterating over connections, resolving temporal constraints and fill modes in real-time space, and setting `mask[i, j] = weight` for each (query_position, key_position) pair. Fill weights may be fractional for INTERPOLATE connections.
