@@ -11,8 +11,6 @@ be revisited for analysis outside the test session.
 import json
 import math
 import os
-import time
-from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -202,55 +200,6 @@ def generate_stale_copy_data(
     return {"slow_data": slow_data, "fast_targets": fast_targets}
 
 
-def generate_decay_relevance_data(
-    n_samples: int,
-    d_model: int,
-    n_fast_frames: int = 8,
-    tau: float = 3.0,
-    seed: int = 42,
-) -> Dict[str, torch.Tensor]:
-    """Decay relevance task: signal decays exponentially with staleness.
-
-    The slow region holds a value v at t=0. The fast region's target at
-    real time k is v * exp(-k/tau). A model with DECAY fill should learn
-    to down-weight stale values, matching the ground-truth decay.
-
-    Returns:
-        dict with 'slow_data', 'fast_targets', 'tau'.
-    """
-    gen = torch.Generator().manual_seed(seed)
-    slow_data = torch.randn(n_samples, 1, d_model, generator=gen)
-    fast_targets = torch.zeros(n_samples, n_fast_frames, d_model)
-    for k in range(n_fast_frames):
-        decay = math.exp(-k / tau)
-        fast_targets[:, k] = slow_data[:, 0] * decay
-    return {"slow_data": slow_data, "fast_targets": fast_targets, "tau": tau}
-
-
-def generate_drift_data(
-    n_samples: int,
-    d_model: int,
-    n_fast_frames: int = 8,
-    seed: int = 42,
-) -> Dict[str, torch.Tensor]:
-    """Predictable drift task: slow region follows a linear trend.
-
-    The slow region holds v0 at t=0. The fast region's target at time k
-    is v0 + slope * k. The slope is large enough that holding v0 gives
-    substantial error at later frames, rewarding learned extrapolation.
-
-    Returns:
-        dict with 'slow_data', 'fast_targets', 'slopes'.
-    """
-    gen = torch.Generator().manual_seed(seed)
-    v0 = torch.randn(n_samples, 1, d_model, generator=gen) * 0.5
-    slopes = torch.randn(n_samples, 1, d_model, generator=gen) * 0.3
-    fast_targets = torch.zeros(n_samples, n_fast_frames, d_model)
-    for k in range(n_fast_frames):
-        fast_targets[:, k] = v0[:, 0] + slopes[:, 0] * k
-    return {"slow_data": v0, "fast_targets": fast_targets, "slopes": slopes}
-
-
 def generate_interpolation_data(
     n_samples: int,
     d_model: int,
@@ -295,7 +244,7 @@ def make_layout_and_topology(
     Args:
         slow_period: Period of the slow region. When >1, the slow region's
             canvas frames map to non-adjacent real times, creating natural
-            gaps that INTERPOLATE/DECAY can exploit.
+            gaps that INTERPOLATE can exploit.
             With slow_period=1, slow exists only at canvas t=0 (one frame).
             With slow_period=4, slow has 2 canvas frames mapping to real
             times 0 and 4, with gaps at real times 1-3 and 5-7.
@@ -321,42 +270,6 @@ def make_layout_and_topology(
         Connection(src="fast", dst="fast", t_src=0, t_dst=0),
         Connection(
             src="fast", dst="slow", t_src=0, t_dst=0,
-            temporal_fill=fill_mode,
-        ),
-    ])
-    return layout, topology
-
-
-def make_two_anchor_layout_and_topology(
-    fill_mode: TemporalFill,
-    d_model: int = 32,
-    n_fast_frames: int = 8,
-) -> Tuple[CanvasLayout, CanvasTopology]:
-    """Layout with two slow anchors (start/end) and a fast region.
-
-    slow_start at t=0, slow_end at t=(n_fast_frames-1).
-    Fast queries both anchors with the given fill mode.
-    INTERPOLATE can lerp between them for intermediate timesteps.
-    """
-    layout = CanvasLayout(
-        T=n_fast_frames,
-        H=3,
-        W=1,
-        d_model=d_model,
-        regions={
-            "fast": (0, n_fast_frames, 0, 1, 0, 1),
-            "slow_start": (0, 1, 1, 2, 0, 1),                     # t=0 only
-            "slow_end": (n_fast_frames - 1, n_fast_frames, 2, 3, 0, 1),  # t=last only
-        },
-    )
-    topology = CanvasTopology(connections=[
-        Connection(src="fast", dst="fast", t_src=0, t_dst=0),
-        Connection(
-            src="fast", dst="slow_start", t_src=0, t_dst=0,
-            temporal_fill=fill_mode,
-        ),
-        Connection(
-            src="fast", dst="slow_end", t_src=0, t_dst=0,
             temporal_fill=fill_mode,
         ),
     ])
@@ -492,82 +405,6 @@ def train_fill_mode(
         for f in range(n_fast_frames):
             summary["eval_loss_frame_{}".format(f)] = per_frame[f].item()
         logger.write_summary(summary)
-
-    return model, losses
-
-
-def train_two_anchor(
-    fill_mode: TemporalFill,
-    data: Dict[str, torch.Tensor],
-    n_steps: int = 200,
-    d_model: int = 32,
-    n_fast_frames: int = 8,
-    lr: float = 1e-3,
-    batch_size: int = 64,
-    seed: int = 42,
-    logger: Optional[ResultLogger] = None,
-) -> Tuple[nn.Module, List[float]]:
-    """Train on the two-anchor interpolation task."""
-    torch.manual_seed(seed)
-
-    layout, topology = make_two_anchor_layout_and_topology(fill_mode, d_model, n_fast_frames)
-    model = TemporalFillModel(
-        layout, topology, d_model=d_model, n_heads=2, n_layers=2, dropout=0.0,
-    )
-
-    input_proj_start = nn.Linear(d_model, d_model)
-    input_proj_end = nn.Linear(d_model, d_model)
-    readout = nn.Linear(d_model, d_model)
-
-    params = (list(model.parameters()) + list(input_proj_start.parameters()) +
-              list(input_proj_end.parameters()) + list(readout.parameters()))
-    opt = torch.optim.Adam(params, lr=lr)
-
-    slow_start = data["slow_start_data"]
-    slow_end = data["slow_end_data"]
-    fast_targets = data["fast_targets"]
-    n_samples = slow_start.shape[0]
-
-    if logger:
-        logger.log_config({
-            "fill_mode": fill_mode.value,
-            "task": "two_anchor_interpolation",
-            "d_model": d_model,
-            "n_fast_frames": n_fast_frames,
-            "n_steps": n_steps,
-            "seed": seed,
-            "n_params": sum(p.numel() for p in params),
-        })
-
-    losses = []
-    for step in range(n_steps):
-        idx = torch.randint(0, n_samples, (batch_size,))
-
-        canvas = model.canvas.create_empty(batch_size)
-        canvas = model.canvas.place(canvas, input_proj_start(slow_start[idx]), "slow_start")
-        canvas = model.canvas.place(canvas, input_proj_end(slow_end[idx]), "slow_end")
-
-        output = model(canvas)
-        fast_out = model.canvas.extract(output, "fast")
-        predictions = readout(fast_out)
-        loss = ((predictions - fast_targets[idx]) ** 2).mean()
-
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, 10.0)
-        opt.step()
-
-        loss_val = loss.item()
-        losses.append(loss_val)
-
-        if logger:
-            logger.log_step({"step": step, "loss": loss_val})
-            if step in (0, n_steps // 2, n_steps - 1):
-                logger.save_checkpoint(model, step)
-
-    if logger:
-        final_loss = sum(losses[-10:]) / 10 if len(losses) >= 10 else losses[-1]
-        logger.write_summary({"final_train_loss": final_loss})
 
     return model, losses
 
