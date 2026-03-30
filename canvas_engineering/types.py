@@ -52,6 +52,11 @@ class Field:
         attn: Default attention function type for outgoing connections.
         semantic_type: Human-readable modality description.
         temporal_extent: Number of timesteps this field spans. None = full T.
+        family: Region family for v2 process semantics. None = infer default
+            ("state"). One of: observation, state, memory, residual, action.
+        tags: Semantic sub-tags within a family. E.g., ("belief", "object").
+        carrier: Dynamics carrier. None = infer default ("deterministic").
+            One of: deterministic, diffusive, filter, memory, residual.
     """
     h: int = 1
     w: int = 1
@@ -61,6 +66,9 @@ class Field:
     attn: str = "cross_attention"
     semantic_type: Optional[str] = None
     temporal_extent: Optional[int] = None
+    family: Optional[str] = None
+    tags: Tuple[str, ...] = ()
+    carrier: Optional[str] = None
 
     @property
     def num_positions(self) -> int:
@@ -947,3 +955,79 @@ def compile_schema(
     schema = CanvasSchema(layout=layout, topology=topology)
 
     return BoundSchema(schema, regions)
+
+
+# -- Program Compilation ----------------------------------------------
+
+def compile_program(
+    root: Any,
+    T: int = 1,
+    H: Optional[int] = None,
+    W: Optional[int] = None,
+    d_model: int = 64,
+    connectivity: Optional[ConnectivityPolicy] = None,
+    layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
+    t_current: int = 0,
+) -> Tuple["BoundSchema", "CanvasProgram"]:
+    """Compile an object hierarchy into a BoundSchema + CanvasProgram.
+
+    Same as compile_schema() but also generates a CanvasProgram with
+    RegionPrograms derived from Field's family/tags/carrier attributes.
+    Fields without family/carrier get default RegionPrograms.
+
+    Args:
+        root: Object with Field attributes.
+        T, H, W, d_model: Canvas dimensions.
+        connectivity: Connectivity policy.
+        layout_strategy: Packing strategy.
+        t_current: Timestep boundary for output mask.
+
+    Returns:
+        (BoundSchema, CanvasProgram) tuple.
+
+    Example:
+        @dataclass
+        class Robot:
+            camera: Field = Field(12, 12, family="observation")
+            joints: Field = Field(1, 8, family="observation", carrier="deterministic")
+            belief: Field = Field(4, 4, family="state", tags=("belief",))
+            action: Field = Field(1, 8, family="action", loss_weight=2.0)
+
+        bound, program = compile_program(Robot(), T=8, d_model=256)
+    """
+    from canvas_engineering.program import CanvasProgram, RegionProgram
+
+    # 1. Compile schema (unchanged)
+    bound = compile_schema(
+        root, T=T, H=H, W=W, d_model=d_model,
+        connectivity=connectivity,
+        layout_strategy=layout_strategy,
+        t_current=t_current,
+    )
+
+    # 2. Walk the type tree to extract Field → RegionProgram mapping
+    tree = _walk(root)
+    _insert_coarse_fields(tree)
+    flat = _flatten_fields(tree)
+    field_map = {path: f for path, f, _ in flat}
+
+    # 3. Build RegionProgram for each region in the compiled schema
+    region_programs = {}
+    for path in bound.field_names:
+        f = field_map.get(path)
+        if f is not None:
+            region_programs[path] = RegionProgram(
+                family=f.family if f.family else "state",
+                tags=f.tags,
+                carrier=f.carrier if f.carrier else "deterministic",
+            )
+        else:
+            region_programs[path] = RegionProgram()
+
+    # 4. Build CanvasProgram
+    program = CanvasProgram(
+        schema=bound.schema,
+        regions=region_programs,
+    )
+
+    return bound, program

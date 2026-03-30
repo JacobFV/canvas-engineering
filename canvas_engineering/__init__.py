@@ -47,7 +47,12 @@ from canvas_engineering.attention import (
 from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
-    BoundField, BoundSchema, compile_schema,
+    BoundField, BoundSchema, compile_schema, compile_program,
+)
+from canvas_engineering.program import (
+    CanvasProgram, RegionProgram, ConnectionProgram,
+    ClockSpec, LearningSpec,
+    REGION_FAMILIES, CARRIERS, OPERATORS, WRITE_MODES, COMPILE_MODES,
 )
 from canvas_engineering.semantic import (
     SemanticConditioner,
@@ -80,6 +85,17 @@ __all__ = [
     "BoundField",
     "BoundSchema",
     "compile_schema",
+    "compile_program",
+    "CanvasProgram",
+    "RegionProgram",
+    "ConnectionProgram",
+    "ClockSpec",
+    "LearningSpec",
+    "REGION_FAMILIES",
+    "CARRIERS",
+    "OPERATORS",
+    "WRITE_MODES",
+    "COMPILE_MODES",
     "SemanticConditioner",
     "auto_semantic_type",
     "compute_semantic_embeddings",
