@@ -6,5 +6,6 @@ build/
 .eggs/
 *.egg
 .pytest_cache/
+test_results/
 .DS_Store
 site/

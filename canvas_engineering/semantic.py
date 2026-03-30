@@ -14,11 +14,11 @@ Design:
     - Compatible with SpatiotemporalCanvas: replaces learned modality embeddings
       when a conditioner is provided
 
-# TODO: Meta-learn semantic embeddings via prediction/infilling/reverse-diffusion
-# across diverse projections of the same world model. The text embeddings are a
-# good initialization, but the optimal embedding space for dynamics conditioning
-# may differ from the text embedding space. A meta-learning loop over many
-# (projection, dataset) pairs could learn a better mapping.
+
+# Future research direction: meta-learn semantic embeddings via
+# prediction/infilling/reverse-diffusion across diverse projections.
+# Text embeddings are a good initialization; the optimal embedding space
+# for dynamics conditioning may be learned from (projection, dataset) pairs.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Tests for declarative canvas topology, including temporal connections."""
 import torch
 import pytest
-from canvas_engineering import CanvasLayout, Connection, CanvasTopology
+from canvas_engineering import CanvasLayout, Connection, CanvasTopology, TemporalFill
 
 
 def make_layout():
@@ -210,9 +210,17 @@ def test_next_frame_cross_attention():
     obs_t1 = layout.region_indices_at_t("obs", 1)
     assert mask[obs_t0[0], obs_t1[0]].item() == 1.0
 
-    # obs at t=3 should NOT attend to obs at t=4 (out of bounds)
+    # obs at t=3: t_dst=1 targets t=4 (out of bounds). With default HOLD,
+    # falls back to most recent available (t=3). With DROP, would be zero.
     obs_t3 = layout.region_indices_at_t("obs", 3)
-    assert sum(mask[obs_t3[0]].tolist()) == 0.0
+    assert mask[obs_t3[0], obs_t3[0]].item() == 1.0  # held to t=3
+
+    # Verify DROP mode gives the old behavior (no connection)
+    topo_drop = CanvasTopology(connections=[
+        Connection(src="obs", dst="obs", t_src=0, t_dst=1, temporal_fill=TemporalFill.DROP)
+    ])
+    mask_drop = topo_drop.to_attention_mask(layout)
+    assert sum(mask_drop[obs_t3[0]].tolist()) == 0.0
 
 
 def test_mixed_src_constrained_dst_all():
@@ -436,7 +444,7 @@ def test_attention_types_registry():
         "cross_attention", "linear_attention", "cosine_attention",
         "sigmoid_attention", "gated", "perceiver", "pooling", "copy",
         "mamba", "rwkv", "hyena", "sparse_attention", "local_attention",
-        "none", "random_fixed", "mixture",
+        "none", "random_fixed", "mixture", "cogvideox",
     }
     assert set(ATTENTION_TYPES.keys()) == expected
     for name, desc in ATTENTION_TYPES.items():
@@ -509,6 +517,291 @@ def test_additive_mask_dense():
     b_idx = layout.region_indices("b")
     # Cross-region should be allowed
     assert mask[a_idx[0], b_idx[0]].item() == 0.0
+
+
+# ── Temporal fill mode tests ──────────────────────────────────────────
+
+
+def make_sparse_layout():
+    """Layout where regions only exist at certain timesteps, for fill testing.
+
+    'fast' is at every timestep (0-7), 'slow' is at 0 and 4 only.
+    This simulates a period-4 slow region and a period-1 fast region.
+    """
+    return CanvasLayout(T=8, H=2, W=2, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),   # 8 positions, 1 per frame
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),  # 2 positions at t=0,1
+    })
+
+
+def test_temporal_fill_hold_basic():
+    """HOLD: when dst missing at target timestep, use most recent past."""
+    layout = make_temporal_layout()
+    # fast queries slow at t_dst=0 for each ref. At ref=1, abs_dst=1.
+    # If slow has no position at t=1, HOLD grabs t=0.
+    # In make_temporal_layout, all regions span all 4 timesteps, so this
+    # doesn't trigger hold. Use a layout where slow is sparse.
+    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
+        "fast": (0, 4, 0, 1, 0, 1),   # t=0,1,2,3
+        "slow": (0, 1, 1, 2, 0, 1),   # t=0 only
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.HOLD)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t0 = layout.region_indices_at_t("fast", 0)
+    slow_t0 = layout.region_indices_at_t("slow", 0)
+
+    # ref=0: abs_dst=0, slow exists at t=0 → direct connection
+    assert mask[fast_t0[0], slow_t0[0]].item() == 1.0
+
+    # ref=1: abs_dst=1, slow doesn't exist at t=1 → HOLD to t=0
+    fast_t1 = layout.region_indices_at_t("fast", 1)
+    assert mask[fast_t1[0], slow_t0[0]].item() == 1.0
+
+    # ref=2: abs_dst=2, slow doesn't exist → HOLD to t=0
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    assert mask[fast_t2[0], slow_t0[0]].item() == 1.0
+
+
+def test_temporal_fill_drop():
+    """DROP: no connection when dst is missing."""
+    layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
+        "fast": (0, 4, 0, 1, 0, 1),
+        "slow": (0, 1, 1, 2, 0, 1),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.DROP)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t0 = layout.region_indices_at_t("fast", 0)
+    slow_t0 = layout.region_indices_at_t("slow", 0)
+
+    # ref=0: direct connection exists
+    assert mask[fast_t0[0], slow_t0[0]].item() == 1.0
+
+    # ref=1: DROP → no connection
+    fast_t1 = layout.region_indices_at_t("fast", 1)
+    assert mask[fast_t1[0], slow_t0[0]].item() == 0.0
+
+
+
+def test_temporal_fill_interpolate_both_endpoints():
+    """INTERPOLATE: lerp between past and future when both available."""
+    layout = CanvasLayout(T=6, H=2, W=2, d_model=16, regions={
+        "fast": (0, 6, 0, 1, 0, 1),
+        "slow": (0, 1, 1, 2, 0, 1),  # only at t=0
+    })
+    # Also add slow at t=4 by using a bigger region
+    layout = CanvasLayout(T=6, H=2, W=2, d_model=16, regions={
+        "fast": (0, 6, 0, 1, 0, 1),
+        # slow at t=0 and t=4
+        "slow_0": (0, 1, 1, 2, 0, 1),
+        "slow_4": (4, 5, 1, 2, 0, 1),
+    })
+    # For a clean test, let's use a single 'slow' region that spans t=0..5
+    # but only has positions at specific timesteps. Actually CanvasLayout
+    # gives positions at all timesteps in the range. So let's just test
+    # with the _resolve_temporal_fill helper directly.
+    from canvas_engineering.connectivity import _resolve_temporal_fill
+
+    # Simulate: slow has positions at t=0 and t=4, query wants t=2
+    dst_t_cache = {0: [10], 4: [14]}
+    conn = Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                      temporal_fill=TemporalFill.INTERPOLATE)
+
+    resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=2, max_T=6)
+    # Should get two pairs: past (t=0, dist=2) and future (t=4, dist=2)
+    assert len(resolved) == 2
+    # Equal distance → equal weight (0.5 each)
+    assert abs(resolved[0][1] - 0.5) < 1e-5  # w_past
+    assert abs(resolved[1][1] - 0.5) < 1e-5  # w_future
+    assert resolved[0][0] == [10]  # t=0 indices
+    assert resolved[1][0] == [14]  # t=4 indices
+
+
+def test_temporal_fill_interpolate_asymmetric():
+    """INTERPOLATE: weights are proportional to distance from other endpoint."""
+    from canvas_engineering.connectivity import _resolve_temporal_fill
+
+    # slow at t=0 and t=4, query at t=1 (closer to past)
+    dst_t_cache = {0: [10], 4: [14]}
+    conn = Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                      temporal_fill=TemporalFill.INTERPOLATE)
+
+    resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=1, max_T=6)
+    assert len(resolved) == 2
+    # past_d=1, future_d=3, span=4
+    # w_past = future_d/span = 3/4 = 0.75 (closer to past → more weight on past)
+    # w_future = past_d/span = 1/4 = 0.25
+    assert abs(resolved[0][1] - 0.75) < 1e-5
+    assert abs(resolved[1][1] - 0.25) < 1e-5
+
+
+def test_temporal_fill_interpolate_only_past():
+    """INTERPOLATE: falls back to HOLD when only past is available."""
+    from canvas_engineering.connectivity import _resolve_temporal_fill
+
+    dst_t_cache = {0: [10]}  # only past
+    conn = Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                      temporal_fill=TemporalFill.INTERPOLATE)
+
+    resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=3, max_T=6)
+    assert len(resolved) == 1
+    assert resolved[0][0] == [10]
+    assert resolved[0][1] == 1.0  # full weight (hold fallback)
+
+
+
+def test_temporal_fill_interpolate_period_mismatch():
+    """INTERPOLATE with period-mismatched regions: real-time gaps enable lerp.
+
+    fast (period=1) queries slow (period=4). slow has canvas frames 0,1
+    mapping to real times 0,4. At fast frame 2 (real time 2), INTERPOLATE
+    should lerp between slow real t=0 and real t=4 with 50/50 weights.
+    """
+    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),  # period=1, real times 0-7
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),  # real times 0,4
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.INTERPOLATE)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t0 = layout.region_indices_at_t("fast", 0)
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    fast_t3 = layout.region_indices_at_t("fast", 3)
+    slow_t0 = layout.region_indices_at_t("slow", 0)  # real time 0
+    slow_t1 = layout.region_indices_at_t("slow", 1)  # real time 4
+
+    # fast t=0 (real 0) → slow at real 0 exists → direct, weight=1.0
+    assert mask[fast_t0[0], slow_t0[0]].item() == 1.0
+
+    # fast t=2 (real 2) → slow at real 2 doesn't exist
+    # INTERPOLATE: past=real 0 (dist=2), future=real 4 (dist=2)
+    # w_past = 2/4 = 0.5, w_future = 2/4 = 0.5
+    assert abs(mask[fast_t2[0], slow_t0[0]].item() - 0.5) < 1e-5
+    assert abs(mask[fast_t2[0], slow_t1[0]].item() - 0.5) < 1e-5
+
+    # fast t=3 (real 3) → slow at real 3 doesn't exist
+    # INTERPOLATE: past=real 0 (dist=3), future=real 4 (dist=1)
+    # w_past = 1/4 = 0.25, w_future = 3/4 = 0.75
+    assert abs(mask[fast_t3[0], slow_t0[0]].item() - 0.25) < 1e-5
+    assert abs(mask[fast_t3[0], slow_t1[0]].item() - 0.75) < 1e-5
+
+
+def test_temporal_fill_hold_period_mismatch():
+    """HOLD with period-mismatched regions: holds most recent real-time value."""
+    layout = CanvasLayout(T=8, H=2, W=1, d_model=16, regions={
+        "fast": (0, 8, 0, 1, 0, 1),
+        "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=4),
+    })
+    topo = CanvasTopology(connections=[
+        Connection(src="fast", dst="slow", t_src=0, t_dst=0,
+                   temporal_fill=TemporalFill.HOLD)
+    ])
+    mask = topo.to_attention_mask(layout)
+
+    fast_t2 = layout.region_indices_at_t("fast", 2)
+    slow_t0 = layout.region_indices_at_t("slow", 0)  # real time 0
+    slow_t1 = layout.region_indices_at_t("slow", 1)  # real time 4
+
+    # fast t=2 (real 2): slow at real 2 doesn't exist → HOLD to real 0
+    assert mask[fast_t2[0], slow_t0[0]].item() == 1.0
+    assert mask[fast_t2[0], slow_t1[0]].item() == 0.0  # future, not held
+
+    # fast t=5 (real 5): slow at real 5 doesn't exist → HOLD to real 4
+    fast_t5 = layout.region_indices_at_t("fast", 5)
+    assert mask[fast_t5[0], slow_t1[0]].item() == 1.0  # held to slow canvas t=1 (real 4)
+
+
+
+def test_temporal_fill_connection_defaults():
+    """Connection defaults to HOLD fill and interpolation_order=1; no decay_halflife."""
+    c = Connection(src="a", dst="b")
+    assert c.temporal_fill == TemporalFill.HOLD
+    assert c.interpolation_order == 1
+    assert not hasattr(c, "decay_halflife")
+
+
+def test_temporal_fill_summary_reports_fill_modes():
+    """Summary should report fill mode counts for temporal connections."""
+    topo = CanvasTopology(connections=[
+        Connection(src="a", dst="b", t_src=0, t_dst=-1, temporal_fill=TemporalFill.HOLD),
+        Connection(src="a", dst="b", t_src=0, t_dst=0, temporal_fill=TemporalFill.INTERPOLATE),
+        Connection(src="b", dst="a", t_src=0, t_dst=-1, temporal_fill=TemporalFill.HOLD),
+    ])
+    s = topo.summary()
+    assert "hold=2" in s
+    assert "interpolate=1" in s
+
+
+def test_causal_temporal_with_fill_mode():
+    """causal_temporal constructor propagates fill mode."""
+    topo = CanvasTopology.causal_temporal(
+        ["a", "b"], temporal_fill=TemporalFill.INTERPOLATE
+    )
+    for c in topo.connections:
+        assert c.temporal_fill == TemporalFill.INTERPOLATE
+
+
+def test_interpolation_order2_idw_weights():
+    """INTERPOLATE with order=2: IDW uses 1/dist^2 weights over nearest anchors.
+
+    slow region has 3 anchors at real times 0, 4, 8. order=2 means we take
+    up to order+1=3 nearest anchors and weight them by 1/dist^2, normalized.
+
+    For order=2, at real time 2 (missing):
+      - all 3 anchors available: t=0 (dist=2), t=4 (dist=2), t=8 (dist=6)
+      - raw weights: 1/4, 1/4, 1/36
+      - total = 9/36 + 9/36 + 1/36 = 19/36
+      - normalized: 9/19, 9/19, 1/19
+
+    For order=2, at real time 6 (missing):
+      - all 3 anchors: t=4 (dist=2), t=8 (dist=2), t=0 (dist=6)
+      - same weight pattern: 9/19, 9/19, 1/19
+    """
+    from canvas_engineering.connectivity import _resolve_temporal_fill
+
+    # slow has real times 0, 4, 8
+    dst_t_cache = {0: [10], 4: [14], 8: [18]}
+    conn = Connection(
+        src="fast", dst="slow", t_src=0, t_dst=0,
+        temporal_fill=TemporalFill.INTERPOLATE,
+        interpolation_order=2,
+    )
+
+    # Query at real time 2 (missing): all 3 anchors within order+1=3 slots
+    # sorted by dist: t=0(dist=2), t=4(dist=2), t=8(dist=6)
+    # raw_weights: 1/4, 1/4, 1/36 → total=19/36 → normalized: 9/19, 9/19, 1/19
+    resolved = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=2, max_T=12)
+    assert len(resolved) == 3
+    weights = {tuple(idxs): w for idxs, w in resolved}
+    expected_close = 9.0 / 19.0
+    expected_far = 1.0 / 19.0
+    assert abs(weights[(10,)] - expected_close) < 1e-5, weights
+    assert abs(weights[(14,)] - expected_close) < 1e-5, weights
+    assert abs(weights[(18,)] - expected_far) < 1e-5, weights
+
+    # Query at real time 6 (missing): sorted: t=4(dist=2), t=8(dist=2), t=0(dist=6)
+    # same weight pattern
+    resolved6 = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=6, max_T=12)
+    assert len(resolved6) == 3
+    w_map = {tuple(idxs): w for idxs, w in resolved6}
+    assert abs(w_map[(14,)] - expected_close) < 1e-5, w_map
+    assert abs(w_map[(18,)] - expected_close) < 1e-5, w_map
+    assert abs(w_map[(10,)] - expected_far) < 1e-5, w_map
+
+    # Query at existing real time 4 → direct connection, weight=1.0
+    resolved_direct = _resolve_temporal_fill(conn, dst_t_cache, abs_dst=4, max_T=12)
+    assert len(resolved_direct) == 1
+    assert resolved_direct[0][1] == 1.0
 
 
 if __name__ == "__main__":

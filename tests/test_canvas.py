@@ -239,5 +239,69 @@ def test_full_example():
     assert layout.canvas_frame("thought", 7) is None
 
 
+# --- PeriodEmbedding tests ---
+
+
+from canvas_engineering import PeriodEmbedding
+
+
+def test_period_embedding_bucket_period_1():
+    pe = PeriodEmbedding(d_model=32)
+    assert pe.bucket(1) == 0
+    assert pe.bucket(0) == 0  # edge case
+
+
+def test_period_embedding_bucket_monotonic():
+    """Higher periods should map to equal or higher buckets."""
+    pe = PeriodEmbedding(d_model=32)
+    periods = [1, 2, 4, 16, 64, 576, 4608]
+    buckets = [pe.bucket(p) for p in periods]
+    for i in range(1, len(buckets)):
+        assert buckets[i] >= buckets[i - 1]
+
+
+def test_period_embedding_bucket_within_range():
+    pe = PeriodEmbedding(d_model=32, n_buckets=16)
+    for p in [1, 10, 100, 1000, 10000, 100000]:
+        b = pe.bucket(p)
+        assert 0 <= b < 16
+
+
+def test_period_embedding_output_shape():
+    pe = PeriodEmbedding(d_model=64)
+    emb = pe(1)
+    assert emb.shape == (64,)
+    emb = pe(576)
+    assert emb.shape == (64,)
+
+
+def test_period_embedding_different_periods_different_buckets():
+    """Very different periods should map to different buckets."""
+    pe = PeriodEmbedding(d_model=32, n_buckets=16)
+    assert pe.bucket(1) != pe.bucket(1000)
+
+
+def test_canvas_create_empty_includes_period_embedding():
+    """create_empty should sum period embeddings for region positions."""
+    layout = CanvasLayout(
+        T=2, H=2, W=2, d_model=32,
+        regions={
+            "fast": RegionSpec(bounds=(0, 2, 0, 1, 0, 1), period=1),
+            "slow": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), period=100),
+        },
+    )
+    canvas = SpatiotemporalCanvas(layout)
+    batch = canvas.create_empty(1)
+
+    # Fast and slow positions should have different values due to different
+    # period embeddings (even though they share positional encoding structure)
+    fast_idx = layout.region_indices("fast")
+    slow_idx = layout.region_indices("slow")
+    fast_vals = batch[0, fast_idx]
+    slow_vals = batch[0, slow_idx]
+    # They shouldn't be equal (different period embeddings added)
+    assert not torch.allclose(fast_vals, slow_vals)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -15,6 +15,15 @@ Temporal connections:
     Connection(src="action", dst="obs", t_src=0, t_dst=-1) # action queries prev obs
     Connection(src="thought", dst="thought")               # full temporal self-attn
 
+Temporal fill modes:
+    When a connection has temporal constraints and the dst region has no
+    positions at the requested timestep (e.g. a slow-updating field between
+    updates), the temporal_fill mode determines behavior:
+
+    TemporalFill.DROP         — skip (no connection).
+    TemporalFill.HOLD         — use most recent available value. Default.
+    TemporalFill.INTERPOLATE  — weighted interpolation between surrounding values.
+
 Example:
     topology = CanvasTopology(
         connections=[
@@ -36,12 +45,40 @@ Example:
     )
 """
 
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 import torch
+import torch.nn as nn
 
 from canvas_engineering.canvas import CanvasLayout
+
+
+class TemporalFill(str, Enum):
+    """How to handle temporal mismatches when dst has no value at the requested timestep.
+
+    When regions update at different frequencies, a fast region (period=1)
+    attending to a slow region (period=576) will often find no dst positions
+    at the exact requested timestep. This enum controls what happens.
+
+    DROP:        No connection. The fast region gets nothing from the slow region
+                 at misaligned frames. Information is lost.
+    HOLD:        Zero-order hold. Use the most recent available value from the
+                 slow region. This is how the real world works — you trade on
+                 last quarter's GDP until this quarter's is released.
+    INTERPOLATE: Weighted interpolation between surrounding available values.
+                 For order=1 (default): linear lerp between nearest past and
+                 future endpoints (falls back to HOLD if only past is available).
+                 For order=N: inverse-distance weighting (IDW) over up to N+1
+                 nearest anchor points with weights proportional to 1/dist^N,
+                 non-negative and normalized. Best for smooth signals during
+                 training where both endpoints are known.
+    """
+    DROP = "drop"
+    HOLD = "hold"
+    INTERPOLATE = "interpolate"
 
 
 @dataclass(frozen=True)
@@ -63,6 +100,12 @@ class Connection:
             region's default_attn. See ATTENTION_TYPES in canvas.py for the
             full registry. The schema declares intent; execution is
             backend-dependent.
+        temporal_fill: How to handle missing dst positions at the requested
+            timestep. Only applies when t_dst is not None. Default HOLD.
+        interpolation_order: For TemporalFill.INTERPOLATE, the IDW order.
+            order=1 (default) gives linear lerp between nearest past and future.
+            order=N uses up to N+1 anchor points weighted by 1/dist^N, normalized.
+            Ignored for DROP and HOLD fill modes.
     """
     src: str
     dst: str
@@ -70,7 +113,125 @@ class Connection:
     t_src: Optional[int] = None
     t_dst: Optional[int] = None
     fn: Optional[str] = None
+    temporal_fill: TemporalFill = TemporalFill.HOLD
+    interpolation_order: int = 1
 
+
+# ── Temporal fill helpers ────────────────────────────────────────────
+
+def _find_nearest_past(
+    t_cache: Dict[int, List[int]], target_t: int,
+) -> Optional[Tuple[int, int]]:
+    """Find the most recent populated timestep before target_t.
+
+    Returns (timestep, staleness) or None.
+    """
+    for t in range(target_t - 1, -1, -1):
+        if t_cache.get(t):
+            return (t, target_t - t)
+    return None
+
+
+def _find_nearest_future(
+    t_cache: Dict[int, List[int]], target_t: int, max_T: int,
+) -> Optional[Tuple[int, int]]:
+    """Find the nearest populated timestep after target_t.
+
+    Returns (timestep, distance) or None.
+    """
+    for t in range(target_t + 1, max_T):
+        if t_cache.get(t):
+            return (t, t - target_t)
+    return None
+
+
+def _resolve_temporal_fill(
+    conn: "Connection",
+    dst_t_cache: Dict[int, List[int]],
+    abs_dst: int,
+    max_T: int,
+) -> List[Tuple[List[int], float]]:
+    """Resolve dst indices and weights for a temporal connection with fill.
+
+    When the dst has no positions at abs_dst, applies the connection's
+    temporal_fill mode to find alternative positions and compute weights.
+
+    Returns:
+        List of (dst_indices, weight) pairs. Empty list = no connection.
+        Multiple pairs possible for INTERPOLATE (past + future endpoints).
+    """
+    dst_at_t = dst_t_cache.get(abs_dst, [])
+    if dst_at_t:
+        return [(dst_at_t, conn.weight)]
+
+    fill = conn.temporal_fill
+
+    if fill == TemporalFill.DROP:
+        return []
+
+    if fill == TemporalFill.HOLD:
+        past = _find_nearest_past(dst_t_cache, abs_dst)
+        if past is not None:
+            return [(dst_t_cache[past[0]], conn.weight)]
+        return []
+
+    if fill == TemporalFill.INTERPOLATE:
+        order = conn.interpolation_order
+
+        if order <= 1:
+            # Linear lerp: use nearest past and future
+            past = _find_nearest_past(dst_t_cache, abs_dst)
+            future = _find_nearest_future(dst_t_cache, abs_dst, max_T)
+            if past is not None and future is not None:
+                past_t, past_d = past
+                future_t, future_d = future
+                span = past_d + future_d
+                w_past = (future_d / span) * conn.weight
+                w_future = (past_d / span) * conn.weight
+                return [
+                    (dst_t_cache[past_t], w_past),
+                    (dst_t_cache[future_t], w_future),
+                ]
+            elif past is not None:
+                # Only past available — fall back to hold
+                return [(dst_t_cache[past[0]], conn.weight)]
+            elif future is not None:
+                # Only future available — use it
+                return [(dst_t_cache[future[0]], conn.weight)]
+            return []
+        else:
+            # Higher-order IDW: collect up to order+1 nearest anchor points
+            # Gather all populated timesteps and their distances
+            anchors: List[Tuple[int, int]] = []  # (timestep, distance)
+            for t in sorted(dst_t_cache.keys()):
+                if dst_t_cache.get(t):
+                    dist = abs(t - abs_dst)
+                    if dist > 0:
+                        anchors.append((t, dist))
+
+            if not anchors:
+                return []
+
+            # Sort by distance and take the closest order+1 anchors
+            anchors.sort(key=lambda x: x[1])
+            anchors = anchors[: order + 1]
+
+            # Compute IDW weights: w_i = 1/dist^order, normalized
+            raw_weights = [1.0 / (d ** order) for _, d in anchors]
+            total = sum(raw_weights)
+            if total < 1e-12:
+                return []
+
+            result = []
+            for (t, _), rw in zip(anchors, raw_weights):
+                w = (rw / total) * conn.weight
+                result.append((dst_t_cache[t], w))
+            return result
+
+    return []
+
+
+# ── Topology ─────────────────────────────────────────────────────────
 
 @dataclass
 class CanvasTopology:
@@ -87,6 +248,9 @@ class CanvasTopology:
         When t_src and/or t_dst are ints, they define relative temporal offsets.
         The mask iterates over reference frames and pairs:
             src positions at (ref + t_src) with dst positions at (ref + t_dst).
+
+        When dst has no positions at the requested timestep, the connection's
+        temporal_fill mode determines behavior (see TemporalFill enum).
 
         Mixed (one None, one int): the None side includes ALL its timesteps,
         the int side is constrained to (ref + offset) per reference frame.
@@ -135,23 +299,39 @@ class CanvasTopology:
         return CanvasTopology(connections=conns)
 
     @staticmethod
-    def causal_temporal(regions: List[str]) -> "CanvasTopology":
+    def causal_temporal(
+        regions: List[str],
+        layout: Optional[CanvasLayout] = None,
+        temporal_fill: TemporalFill = TemporalFill.HOLD,
+    ) -> "CanvasTopology":
         """Temporal causal: same-frame self-attn + prev-frame cross-attn.
 
         Each region attends to itself at the same frame, and to all other
         regions at the previous frame. No future leakage.
+
+        All temporal connections use the specified fill mode (default HOLD),
+        ensuring fast regions can always read from slow regions' most recent
+        values even when update frequencies don't align.
+
+        Args:
+            regions: Region names.
+            layout: Optional layout (reserved for future period-aware logic).
+            temporal_fill: Fill mode for all temporal connections.
         """
         conns = []
         for r in regions:
             # Same-frame self-attention
-            conns.append(Connection(src=r, dst=r, t_src=0, t_dst=0))
+            conns.append(Connection(src=r, dst=r, t_src=0, t_dst=0,
+                                    temporal_fill=temporal_fill))
             # Previous-frame self-attention (temporal context)
-            conns.append(Connection(src=r, dst=r, t_src=0, t_dst=-1))
+            conns.append(Connection(src=r, dst=r, t_src=0, t_dst=-1,
+                                    temporal_fill=temporal_fill))
         # Cross-region: each region queries all others at previous frame
         for s in regions:
             for d in regions:
                 if s != d:
-                    conns.append(Connection(src=s, dst=d, t_src=0, t_dst=-1))
+                    conns.append(Connection(src=s, dst=d, t_src=0, t_dst=-1,
+                                            temporal_fill=temporal_fill))
         return CanvasTopology(connections=conns)
 
     # ── Query methods ────────────────────────────────────────────────────
@@ -174,6 +354,11 @@ class CanvasTopology:
             1. connection.fn if explicitly set
             2. layout.region_spec(connection.src).default_attn if layout provided
             3. "cross_attention" (global default)
+
+        The resolved fn string is dispatched by AttentionDispatcher
+        (see canvas_engineering.dispatch) using ATTENTION_REGISTRY
+        (see canvas_engineering.attention). Each fn maps to an nn.Module
+        with forward(queries, keys, values) -> output.
         """
         if connection.fn is not None:
             return connection.fn
@@ -207,11 +392,13 @@ class CanvasTopology:
         """Generate (N, N) attention mask from topology.
 
         mask[i, j] > 0 means token i (query) attends to token j (key).
-        Value is the connection weight.
+        Value is the connection weight (may be fractional for INTERPOLATE).
 
-        For temporal connections (t_src/t_dst specified), iterates over
-        reference frames and only connects positions at the appropriate
-        absolute timesteps.
+        Temporal fill modes are applied when dst has no positions at the
+        requested timestep:
+            DROP:        No connection (mask stays 0).
+            HOLD:        Connect to most recent available dst positions.
+            INTERPOLATE: Connect to surrounding dst positions with IDW weights.
         """
         N = layout.num_positions
         mask = torch.zeros(N, N, device=device)
@@ -221,12 +408,28 @@ class CanvasTopology:
         for name in layout.regions:
             idx_cache[name] = layout.region_indices(name)
 
-        # Cache per-timestep indices
+        # Cache per-timestep indices (canvas frame space)
         t_idx_cache: Dict[str, Dict[int, List[int]]] = {}
         for name in layout.regions:
             t_idx_cache[name] = {}
             for t in layout.region_timesteps(name):
                 t_idx_cache[name][t] = layout.region_indices_at_t(name, t)
+
+        # Cache per-region real-time indices for period-aware fill resolution.
+        # Maps real_time → position_indices, exposing natural gaps between
+        # updates of slow-period regions (e.g. period=4 → real times {0,4,8,...}).
+        real_t_idx_cache: Dict[str, Dict[int, List[int]]] = {}
+        max_real_T = 0
+        for name in layout.regions:
+            spec = layout.region_spec(name)
+            real_t_idx_cache[name] = {}
+            for canvas_t in layout.region_timesteps(name):
+                real_t = canvas_t * spec.period
+                real_t_idx_cache[name][real_t] = layout.region_indices_at_t(name, canvas_t)
+                if real_t + 1 > max_real_T:
+                    max_real_T = real_t + 1
+        if max_real_T == 0:
+            max_real_T = layout.T
 
         for conn in self.connections:
             if conn.src not in idx_cache or conn.dst not in idx_cache:
@@ -240,35 +443,43 @@ class CanvasTopology:
                     for di in dst_idx:
                         mask[si, di] = max(mask[si, di].item(), conn.weight)
 
-            elif conn.t_src is not None and conn.t_dst is not None:
-                # Both specified: iterate reference frames, pair by offset
+            elif conn.t_dst is not None:
+                # dst is temporally constrained — temporal fill applies.
+                # Resolve in real-time space so period-mismatched regions
+                # expose their natural inter-update gaps to INTERPOLATE.
+                dst_real = real_t_idx_cache.get(conn.dst, {})
                 for ref in range(layout.T):
-                    abs_src = ref + conn.t_src
-                    abs_dst = ref + conn.t_dst
-                    src_at_t = t_idx_cache[conn.src].get(abs_src, [])
-                    dst_at_t = t_idx_cache[conn.dst].get(abs_dst, [])
-                    for si in src_at_t:
-                        for di in dst_at_t:
-                            mask[si, di] = max(mask[si, di].item(), conn.weight)
+                    # Resolve src positions (canvas frame space)
+                    if conn.t_src is not None:
+                        abs_src = ref + conn.t_src
+                        src_at_t = t_idx_cache[conn.src].get(abs_src, [])
+                        src_period = layout.region_spec(conn.src).period
+                    else:
+                        src_at_t = idx_cache[conn.src]
+                        src_period = 1
 
-            elif conn.t_src is not None:
-                # src constrained, dst sees all its timesteps
+                    if not src_at_t:
+                        continue
+
+                    # Convert target to real time for period-aware fill
+                    target_real = (ref + conn.t_dst) * src_period
+                    resolved = _resolve_temporal_fill(
+                        conn, dst_real, target_real, max_real_T,
+                    )
+                    for dst_indices, w in resolved:
+                        for si in src_at_t:
+                            for di in dst_indices:
+                                mask[si, di] = max(mask[si, di].item(), w)
+
+            else:
+                # t_src is not None, t_dst is None
+                # src constrained, dst sees all its timesteps — no fill needed
                 dst_idx = idx_cache[conn.dst]
                 for ref in range(layout.T):
                     abs_src = ref + conn.t_src
                     src_at_t = t_idx_cache[conn.src].get(abs_src, [])
                     for si in src_at_t:
                         for di in dst_idx:
-                            mask[si, di] = max(mask[si, di].item(), conn.weight)
-
-            else:
-                # dst constrained, src sees all its timesteps
-                src_idx = idx_cache[conn.src]
-                for ref in range(layout.T):
-                    abs_dst = ref + conn.t_dst
-                    dst_at_t = t_idx_cache[conn.dst].get(abs_dst, [])
-                    for si in src_idx:
-                        for di in dst_at_t:
                             mask[si, di] = max(mask[si, di].item(), conn.weight)
 
         return mask
@@ -300,18 +511,24 @@ class CanvasTopology:
     def summary(self) -> str:
         """Human-readable summary."""
         adj = self.to_block_adjacency()
-        lines = [f"CanvasTopology ({len(self.connections)} ops, {len(self.regions)} regions):"]
+        lines = ["CanvasTopology ({} ops, {} regions):".format(
+            len(self.connections), len(self.regions))]
         for (src, dst), w in sorted(adj.items()):
             if src == dst:
-                lines.append(f"  {src} ↺ self  (w={w:.2f})")
+                lines.append("  {} ↺ self  (w={:.2f})".format(src, w))
             else:
                 arrow = "↔" if (dst, src) in adj else "→"
-                lines.append(f"  {src} {arrow} {dst}  (w={w:.2f})")
+                lines.append("  {} {} {}  (w={:.2f})".format(src, arrow, dst, w))
 
         if self.has_temporal_constraints:
             temporal = [c for c in self.connections if c.t_src is not None or c.t_dst is not None]
-            lines.append(f"  [{len(temporal)} temporal constraints]")
+            fill_counts: Dict[str, int] = {}
+            for c in temporal:
+                fill_counts[c.temporal_fill.value] = fill_counts.get(c.temporal_fill.value, 0) + 1
+            fill_summary = ", ".join("{}={}".format(f, n) for f, n in sorted(fill_counts.items()))
+            lines.append("  [{} temporal constraints: {}]".format(len(temporal), fill_summary))
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return f"CanvasTopology(connections={len(self.connections)}, regions={sorted(self.regions)})"
+        return "CanvasTopology(connections={}, regions={})".format(
+            len(self.connections), sorted(self.regions))

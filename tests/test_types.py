@@ -1,4 +1,4 @@
-"""Tests for canvas_engineering.types — compositional type system."""
+"""Tests for canvas_engineering.types -- compositional type system."""
 
 import pytest
 import torch
@@ -10,13 +10,15 @@ from canvas_engineering.types import (
     _walk, _flatten_fields, _pack_strip, _pack_interleaved,
     _intra_connections, _parent_child_connections, _array_element_connections,
     _generate_connections, _apply_temporal, _deduplicate,
+    _insert_coarse_fields, _auto_canvas_size, _resolve_coarse_field,
+    _block_weighted_mean_period_from_tree, _flatten_fields_raw,
 )
 from canvas_engineering.canvas import SpatiotemporalCanvas
 from canvas_engineering.connectivity import Connection
 from canvas_engineering.schema import CanvasSchema
 
 
-# ── Test fixtures ────────────────────────────────────────────────────
+# -- Test fixtures -----------------------------------------------------
 
 @dataclass
 class SimpleType:
@@ -59,7 +61,7 @@ class Company(Agent):
     products: list = dc_field(default_factory=list)
 
 
-# ── Field tests ──────────────────────────────────────────────────────
+# -- Field tests -------------------------------------------------------
 
 class TestField:
     def test_defaults(self):
@@ -84,12 +86,12 @@ class TestField:
         assert f.attn == "mamba"
 
     def test_scalar_default(self):
-        """Field() is a scalar — 1 position."""
+        """Field() is a scalar -- 1 position."""
         f = Field()
         assert f.num_positions == 1
 
 
-# ── Tree walking tests ───────────────────────────────────────────────
+# -- Tree walking tests ------------------------------------------------
 
 class TestTreeWalking:
     def test_simple(self):
@@ -162,7 +164,7 @@ class TestTreeWalking:
         assert len(flat) == 4
 
 
-# ── Packing tests ────────────────────────────────────────────────────
+# -- Packing tests -----------------------------------------------------
 
 class TestPacking:
     def test_strip_basic(self):
@@ -212,7 +214,7 @@ class TestPacking:
         assert result["parent.y"][0] >= result["parent.x"][1]
 
 
-# ── Connectivity tests ───────────────────────────────────────────────
+# -- Connectivity tests ------------------------------------------------
 
 class TestConnectivity:
     def test_intra_dense(self):
@@ -270,39 +272,14 @@ class TestConnectivity:
         # No spoke-spoke
         assert ("a", "b") not in pairs
 
-    def test_parent_child_matched_fields(self):
-        company = Company(employees=[Employee()])
-        node = _walk(company)
-        emp_node = node.arrays["employees"][0]
-        policy = ConnectivityPolicy(parent_child="matched_fields")
-        conns = _parent_child_connections(node, emp_node, policy)
-        pairs = {(c.src, c.dst) for c in conns}
-        # thought matches thought
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("employees[0].thought", "thought") in pairs
-        # goal matches goal
-        assert ("goal", "employees[0].goal") in pairs
-        assert ("employees[0].goal", "goal") in pairs
-        # role has no match in parent
-        assert not any(c.src == "employees[0].role" or c.dst == "employees[0].role"
-                       for c in conns if "role" in c.src or "role" in c.dst)
-
-    def test_parent_child_hub_spoke(self):
+    def test_parent_child_bidirectional(self):
+        """Parent-child connections are always bidirectional."""
         robot = Robot()
         node = _walk(robot)
         sensor_node = node.children[0]
-        policy = ConnectivityPolicy(parent_child="hub_spoke")
-        conns = _parent_child_connections(node, sensor_node, policy)
+        conns = _parent_child_connections(node, sensor_node)
         # All parent fields connect to all child fields bidirectionally
         assert len(conns) == 2 * 2 * 2  # 2 parent fields * 2 child fields * 2 directions
-
-    def test_parent_child_none(self):
-        robot = Robot()
-        node = _walk(robot)
-        sensor_node = node.children[0]
-        policy = ConnectivityPolicy(parent_child="none")
-        conns = _parent_child_connections(node, sensor_node, policy)
-        assert len(conns) == 0
 
     def test_array_element_isolated(self):
         company = Company(employees=[Employee(), Employee()])
@@ -319,7 +296,7 @@ class TestConnectivity:
         policy = ConnectivityPolicy(array_element="dense")
         conns = _array_element_connections(elements, policy)
         # Each element has 3 fields, cross-connects to other element's 3 fields
-        # 2 elements, 3*3 per direction, 2 directions (i→j and j→i)
+        # 2 elements, 3*3 per direction, 2 directions (i->j and j->i)
         assert len(conns) == 2 * 3 * 3  # 18
 
     def test_array_element_matched_fields(self):
@@ -329,7 +306,7 @@ class TestConnectivity:
         policy = ConnectivityPolicy(array_element="matched_fields")
         conns = _array_element_connections(elements, policy)
         pairs = {(c.src, c.dst) for c in conns}
-        # thought↔thought, goal↔goal, role↔role across elements
+        # thought<->thought, goal<->goal, role<->role across elements
         assert ("employees[0].thought", "employees[1].thought") in pairs
         assert ("employees[1].thought", "employees[0].thought") in pairs
         # 3 matching fields * 2 directions
@@ -342,7 +319,7 @@ class TestConnectivity:
         policy = ConnectivityPolicy(array_element="ring")
         conns = _array_element_connections(elements, policy)
         src_dst = {(c.src.split(".")[0], c.dst.split(".")[0]) for c in conns}
-        # Ring: 0↔1, 1↔2, 2↔0
+        # Ring: 0<->1, 1<->2, 2<->0
         assert ("employees[0]", "employees[1]") in src_dst
         assert ("employees[1]", "employees[0]") in src_dst
         assert ("employees[1]", "employees[2]") in src_dst
@@ -351,7 +328,7 @@ class TestConnectivity:
         assert ("employees[0]", "employees[2]") in src_dst
 
 
-# ── Temporal policy tests ────────────────────────────────────────────
+# -- Temporal policy tests ---------------------------------------------
 
 class TestTemporal:
     def test_dense_passthrough(self):
@@ -385,7 +362,7 @@ class TestTemporal:
         assert result[0].t_dst == -1
 
 
-# ── Deduplication tests ──────────────────────────────────────────────
+# -- Deduplication tests -----------------------------------------------
 
 class TestDeduplicate:
     def test_removes_duplicates(self):
@@ -406,7 +383,7 @@ class TestDeduplicate:
         assert len(result) == 2
 
 
-# ── Full compilation tests ───────────────────────────────────────────
+# -- Full compilation tests --------------------------------------------
 
 class TestCompileSchema:
     def test_simple(self):
@@ -446,9 +423,11 @@ class TestCompileSchema:
         bound = compile_schema(robot, T=4, H=16, W=16, d_model=128)
         assert "plan" in bound
         assert "action" in bound
+        assert "sensor" in bound  # coarse-grained field
         assert "sensor.camera" in bound
         assert "sensor.depth" in bound
-        assert len(bound.field_names) == 4
+        # 2 robot fields + 1 coarse-grained field + 2 sensor fields = 5
+        assert len(bound.field_names) == 5
 
     def test_arrays(self):
         company = Company(
@@ -458,36 +437,41 @@ class TestCompileSchema:
         bound = compile_schema(company, T=4, H=32, W=32, d_model=128)
         assert "thought" in bound
         assert "goal" in bound
+        assert "employees[0]" in bound  # coarse-grained field
         assert "employees[0].thought" in bound
         assert "employees[0].role" in bound
+        assert "employees[1]" in bound  # coarse-grained field
         assert "employees[1].thought" in bound
+        assert "products[0]" in bound  # coarse-grained field
         assert "products[0].description" in bound
-        # 2 company + 2*3 employee + 1*1 product = 9
-        assert len(bound.field_names) == 9
+        # 2 company + 3 coarse-grained fields + 2*3 employee + 1*1 product = 12
+        assert len(bound.field_names) == 12
 
     def test_connectivity_generated(self):
         bound = compile_schema(SimpleType(), T=4, H=8, W=8, d_model=128)
         assert bound.topology is not None
         conns = bound.topology.connections
-        # Dense intra: x↔x, x↔y, y↔x, y↔y = 4
+        # Dense intra: x<->x, x<->y, y<->x, y<->y = 4
         assert len(conns) == 4
 
-    def test_matched_fields_connectivity(self):
+    def test_coarse_field_connectivity(self):
         company = Company(employees=[Employee()])
         bound = compile_schema(company, T=4, H=16, W=16, d_model=128)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        # Parent-child matched: thought↔thought, goal↔goal
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("employees[0].thought", "thought") in pairs
+        # Parent connects to coarse-grained field, which connects to child fields
+        assert ("thought", "employees[0]") in pairs
+        assert ("employees[0]", "thought") in pairs
+        assert ("employees[0]", "employees[0].thought") in pairs
+        assert ("employees[0].thought", "employees[0]") in pairs
 
     def test_isolated_array_elements(self):
         company = Company(employees=[Employee(), Employee()])
         bound = compile_schema(company, T=4, H=32, W=32, d_model=128)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        # Elements should NOT connect to each other (isolated default)
-        assert ("employees[0].thought", "employees[1].thought") not in pairs
+        # Coarse-grained fields should NOT connect to each other (isolated default)
+        assert ("employees[0]", "employees[1]") not in pairs
 
     def test_dense_array_elements(self):
         company = Company(employees=[Employee(), Employee()])
@@ -496,7 +480,8 @@ class TestCompileSchema:
             company, T=4, H=32, W=32, d_model=128, connectivity=policy)
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        assert ("employees[0].thought", "employees[1].thought") in pairs
+        # Dense: coarse-grained fields connect to each other
+        assert ("employees[0]", "employees[1]") in pairs
 
     def test_causal_temporal(self):
         policy = ConnectivityPolicy(temporal="causal")
@@ -508,12 +493,12 @@ class TestCompileSchema:
         assert any(c.t_src == 0 and c.t_dst == 0 for c in self_conns)
         assert any(c.t_src == 0 and c.t_dst == -1 for c in self_conns)
 
-    def test_no_connectivity(self):
-        policy = ConnectivityPolicy(intra="isolated", parent_child="none")
+    def test_isolated_connectivity(self):
+        policy = ConnectivityPolicy(intra="isolated")
         bound = compile_schema(
             SimpleType(), T=4, H=8, W=8, d_model=128, connectivity=policy)
         conns = bound.topology.connections
-        # Only self-loops
+        # Only self-loops (SimpleType has no children, so no coarse-grained fields)
         assert all(c.src == c.dst for c in conns)
 
     def test_interleaved_layout(self):
@@ -579,7 +564,7 @@ class TestCompileSchema:
         assert bound["slow"].spec.period == 4
 
 
-# ── BoundSchema / BoundField tests ──────────────────────────────────
+# -- BoundSchema / BoundField tests ------------------------------------
 
 class TestBoundSchema:
     def test_getitem(self):
@@ -661,7 +646,7 @@ class TestBoundSchema:
         assert len(indices) == bound["x"].num_positions
 
 
-# ── Schema round-trip test ───────────────────────────────────────────
+# -- Schema round-trip test --------------------------------------------
 
 class TestSchemaRoundTrip:
     def test_to_json_from_json(self, tmp_path):
@@ -678,7 +663,7 @@ class TestSchemaRoundTrip:
             assert len(loaded.topology.connections) == len(bound.topology.connections)
 
 
-# ── Full integration: Company example ────────────────────────────────
+# -- Full integration: Company example ---------------------------------
 
 class TestCompanyIntegration:
     def test_full_company(self):
@@ -695,16 +680,16 @@ class TestCompanyIntegration:
             company, T=4, H=64, W=64, d_model=256,
             connectivity=ConnectivityPolicy(
                 intra="dense",
-                parent_child="matched_fields",
                 array_element="isolated",
             ),
         )
 
-        # Correct number of fields
         # Company: thought, goal (2)
-        # 3 employees × 3 fields (thought, goal, role) = 9
-        # 2 products × 1 field (description) = 2
-        assert len(bound.field_names) == 13
+        # 3 employee coarse-grained fields (employees[0], [1], [2]) = 3
+        # 3 employees x 3 fields (thought, goal, role) = 9
+        # 2 product coarse-grained fields (products[0], [1]) = 2
+        # 2 products x 1 field (description) = 2
+        assert len(bound.field_names) == 18
 
         # CEO got bigger thought
         ceo_thought = bound["employees[0].thought"]
@@ -714,18 +699,15 @@ class TestCompanyIntegration:
         ceo_w = ceo_thought.spec.bounds[5] - ceo_thought.spec.bounds[4]
         assert ceo_h == 8 and ceo_w == 8
 
-        # Matched fields connectivity exists
+        # Coarse-grained field connectivity: parent -> coarse field -> child
         conns = bound.topology.connections
         pairs = {(c.src, c.dst) for c in conns}
-        assert ("thought", "employees[0].thought") in pairs
-        assert ("thought", "employees[1].thought") in pairs
-        assert ("goal", "employees[0].goal") in pairs
-
-        # Products have no matched fields with Company
-        assert not any(
-            "products" in c.src and c.dst in ("thought", "goal")
-            for c in conns
-        )
+        # Parent fields connect to employee coarse-grained fields
+        assert ("thought", "employees[0]") in pairs
+        assert ("goal", "employees[0]") in pairs
+        # Coarse-grained fields connect to child fields
+        assert ("employees[0]", "employees[0].thought") in pairs
+        assert ("employees[0]", "employees[0].goal") in pairs
 
         # Can build canvas and create batch
         canvas = bound.build_canvas()
@@ -747,7 +729,7 @@ class TestCompanyIntegration:
         assert co_h0 == e0_h0 == e1_h0
 
 
-# ── Plain class support ──────────────────────────────────────────────
+# -- Plain class support -----------------------------------------------
 
 class TestPlainClass:
     def test_plain_object(self):
@@ -773,3 +755,368 @@ class TestPlainClass:
         bound = compile_schema(Outer(), T=4, H=8, W=8, d_model=128)
         assert "inner.a" in bound
         assert "b" in bound
+
+
+# -- Auto-sizing tests -------------------------------------------------
+
+class TestAutoSizing:
+    def test_auto_size_simple(self):
+        """Auto-sizing should produce a canvas that fits all fields."""
+        bound = compile_schema(SimpleType(), T=4, d_model=64)
+        # Should succeed (H, W auto-computed)
+        assert "x" in bound
+        assert "y" in bound
+
+    def test_auto_size_nested(self):
+        """Auto-sizing with nested types."""
+        bound = compile_schema(Robot(), T=4, d_model=64)
+        assert "sensor.camera" in bound
+        assert "plan" in bound
+        assert "action" in bound
+
+    def test_auto_size_company(self):
+        """Auto-sizing with arrays."""
+        company = Company(
+            employees=[Employee(), Employee()],
+            products=[Product()],
+        )
+        bound = compile_schema(company, T=1, d_model=64)
+        assert "employees[0].thought" in bound
+        assert "products[0].description" in bound
+
+    def test_auto_size_matches_manual(self):
+        """Auto-sized H, W should be >= what the fields need."""
+        fields = [(p, f.h, f.w) for p, f, _ in _flatten_fields(_walk(SimpleType()))]
+        H, W = _auto_canvas_size(fields)
+        # Should be able to pack with the computed size
+        _pack_strip(fields, H, W)  # should not raise
+
+    def test_auto_size_only_h(self):
+        """Can auto-size H while specifying W."""
+        bound = compile_schema(SimpleType(), T=4, W=8, d_model=64)
+        assert bound.layout.W == 8
+
+    def test_auto_size_only_w(self):
+        """Can auto-size W while specifying H."""
+        bound = compile_schema(SimpleType(), T=4, H=8, d_model=64)
+        assert bound.layout.H == 8
+
+    def test_auto_size_empty_returns_minimum(self):
+        """Empty field list should return minimum canvas."""
+        H, W = _auto_canvas_size([])
+        assert H >= 4 and W >= 4
+
+
+# -- Bottleneck / coarse-grained field tests ---------------------------
+
+class TestBottleneck:
+    def test_coarse_field_created_for_nested_type(self):
+        """Bottleneck should create a coarse-grained field at the child's path."""
+        bound = compile_schema(
+            Robot(), T=4, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        # Robot has nested Sensor -- should get a coarse-grained field at "sensor"
+        assert "sensor" in bound
+        # Original fields should still exist
+        assert "sensor.camera" in bound
+        assert "sensor.depth" in bound
+        assert "plan" in bound
+        assert "action" in bound
+
+    def test_coarse_field_is_1x1(self):
+        """Coarse-grained fields should be 1x1."""
+        bound = compile_schema(
+            Robot(), T=4, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        gw = bound["sensor"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 1 and (w1 - w0) == 1
+
+    def test_coarse_field_connectivity(self):
+        """Coarse-grained field should connect to both parent and child fields."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        conns = bound.topology.connections
+        # Coarse-grained field "sensor" should connect to parent fields ("plan", "action")
+        gw_to_parent = [c for c in conns
+                        if (c.src == "sensor" and c.dst in ("plan", "action"))
+                        or (c.dst == "sensor" and c.src in ("plan", "action"))]
+        assert len(gw_to_parent) > 0
+
+        # Coarse-grained field "sensor" should connect to child fields
+        gw_to_child = [c for c in conns
+                       if (c.src == "sensor" and c.dst in ("sensor.camera", "sensor.depth"))
+                       or (c.dst == "sensor" and c.src in ("sensor.camera", "sensor.depth"))]
+        assert len(gw_to_child) > 0
+
+    def test_no_direct_parent_child_connections(self):
+        """With bottleneck, parent fields should NOT connect directly to child fields."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        conns = bound.topology.connections
+        # "plan" should NOT connect directly to "sensor.camera"
+        direct = [c for c in conns
+                  if (c.src == "plan" and c.dst == "sensor.camera")
+                  or (c.src == "sensor.camera" and c.dst == "plan")]
+        assert len(direct) == 0
+
+    def test_coarse_field_for_array_elements(self):
+        """Each array element should get its own coarse-grained field."""
+        company = Company(
+            employees=[Employee(), Employee(), Employee()],
+        )
+        bound = compile_schema(
+            company, T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        # Each employee should have a coarse-grained field at "employees[i]"
+        assert "employees[0]" in bound
+        assert "employees[1]" in bound
+        assert "employees[2]" in bound
+        # Original fields should still exist
+        assert "employees[0].thought" in bound
+        assert "employees[1].goal" in bound
+
+    def test_no_cross_element_direct_connections(self):
+        """Array elements should interact through coarse-grained fields, not directly."""
+        company = Company(
+            employees=[Employee(), Employee()],
+        )
+        bound = compile_schema(
+            company, T=1, H=32, W=32, d_model=64,
+            connectivity=ConnectivityPolicy(
+                array_element="isolated",
+            ),
+        )
+        conns = bound.topology.connections
+        # employees[0].thought should NOT connect to employees[1].thought
+        cross = [c for c in conns
+                 if "employees[0]." in c.src and "employees[1]." in c.dst]
+        assert len(cross) == 0
+
+    def test_hierarchical_coarse_fields(self):
+        """Deep nesting should create coarse-grained fields at each level."""
+        @dataclass
+        class Inner:
+            x: Field = Field(2, 2)
+
+        @dataclass
+        class Middle:
+            inner: Inner = dc_field(default_factory=Inner)
+            y: Field = Field(1, 2)
+
+        @dataclass
+        class Outer:
+            middle: Middle = dc_field(default_factory=Middle)
+            z: Field = Field(1, 2)
+
+        bound = compile_schema(
+            Outer(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        # Coarse-grained field for Middle
+        assert "middle" in bound
+        # Coarse-grained field for Inner (inside Middle's subtree)
+        assert "middle.inner" in bound
+        # Original fields
+        assert "middle.inner.x" in bound
+        assert "middle.y" in bound
+        assert "z" in bound
+
+    def test_bottleneck_with_auto_sizing(self):
+        """Bottleneck + auto-sizing should work together."""
+        company = Company(
+            employees=[Employee(), Employee()],
+            products=[Product()],
+        )
+        bound = compile_schema(
+            company, T=1, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        # Should have coarse-grained fields and be auto-sized
+        assert "employees[0]" in bound
+        assert "products[0]" in bound
+        assert bound.layout.H > 0
+        assert bound.layout.W > 0
+
+    def test_coarse_field_semantic_type(self):
+        """Coarse-grained fields should have descriptive semantic types."""
+        bound = compile_schema(
+            Robot(), T=1, H=16, W=16, d_model=64,
+            connectivity=ConnectivityPolicy(),
+        )
+        gw = bound["sensor"]
+        assert "coarse" in gw.spec.semantic_type
+        assert "sensor" in gw.spec.semantic_type
+
+    def test_coarse_field_from_class_attribute(self):
+        """__coarse__ on child class sets coarse-grained field size."""
+        @dataclass
+        class BigSensor:
+            __coarse__ = Field(2, 4)
+            cam: Field = Field(6, 6)
+            lidar: Field = Field(4, 4)
+
+        @dataclass
+        class Bot:
+            sensor: BigSensor = dc_field(default_factory=BigSensor)
+            act: Field = Field(1, 4)
+
+        bound = compile_schema(Bot(), H=32, W=32, d_model=64)
+        gw = bound["sensor"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 2 and (w1 - w0) == 4
+
+    def test_coarse_field_from_field_metadata(self):
+        """metadata={"coarse": Field(...)} overrides __coarse__."""
+        @dataclass
+        class Inner:
+            __coarse__ = Field(1, 1)
+            x: Field = Field(2, 2)
+
+        @dataclass
+        class Outer:
+            child: Inner = dc_field(
+                default_factory=Inner,
+                metadata={"coarse": Field(3, 3)},
+            )
+            z: Field = Field(1, 2)
+
+        bound = compile_schema(Outer(), H=16, W=16, d_model=64)
+        gw = bound["child"]
+        t0, t1, h0, h1, w0, w1 = gw.spec.bounds
+        assert (h1 - h0) == 3 and (w1 - w0) == 3
+
+    def test_coarse_field_metadata_on_array(self):
+        """metadata on a list field applies to all element coarse-grained fields."""
+        @dataclass
+        class Host:
+            workers: list = dc_field(
+                default_factory=list,
+                metadata={"coarse": Field(4, 4)},
+            )
+            ctrl: Field = Field(1, 2)
+
+        host = Host(workers=[Employee(), Employee()])
+        bound = compile_schema(host, H=32, W=32, d_model=64)
+        gw0 = bound["workers[0]"]
+        t0, t1, h0, h1, w0, w1 = gw0.spec.bounds
+        assert (h1 - h0) == 4 and (w1 - w0) == 4
+
+    def test_resolve_coarse_field_priority(self):
+        """Field metadata > __coarse__ > default."""
+        @dataclass
+        class Child:
+            __coarse__ = Field(3, 3)
+            x: Field = Field(1, 1)
+
+        @dataclass
+        class ParentOverride:
+            child: Child = dc_field(
+                default_factory=Child,
+                metadata={"coarse": Field(5, 5)},
+            )
+            y: Field = Field(1, 1)
+
+        @dataclass
+        class ParentDefault:
+            child: Child = dc_field(default_factory=Child)
+            y: Field = Field(1, 1)
+
+        # metadata override
+        gw = _resolve_coarse_field(Child(), ParentOverride(), "child")
+        assert gw.h == 5 and gw.w == 5
+
+        # __coarse__ fallback
+        gw = _resolve_coarse_field(Child(), ParentDefault(), "child")
+        assert gw.h == 3 and gw.w == 3
+
+        # plain default
+        gw = _resolve_coarse_field(SimpleType(), ParentDefault(), "child")
+        assert gw.h == 1 and gw.w == 1
+
+    def test_t_defaults_to_1(self):
+        """T should default to 1 when not specified."""
+        bound = compile_schema(SimpleType(), H=8, W=8, d_model=64)
+        assert bound.layout.T == 1
+
+
+# -- Weighted mean period tests ----------------------------------------
+
+class TestBlockWeightedMeanPeriod:
+    def test_uniform_period(self):
+        """All fields same period → result is that period."""
+        @dataclass
+        class Uniform:
+            a: Field = Field(2, 2, period=4)
+            b: Field = Field(3, 3, period=4)
+
+        node = _walk(Uniform())
+        assert _block_weighted_mean_period_from_tree(node) == 4
+
+    def test_weighted_by_block_count(self):
+        """Larger fields should dominate the mean."""
+        @dataclass
+        class Mixed:
+            big: Field = Field(10, 10, period=1)    # 100 blocks
+            small: Field = Field(1, 1, period=100)   # 1 block
+
+        node = _walk(Mixed())
+        result = _block_weighted_mean_period_from_tree(node)
+        # weighted_sum = 100*1 + 1*100 = 200, total_weight = 101
+        # mean = 200/101 ≈ 1.98, rounded = 2
+        assert result == 2  # dominated by the big field
+
+    def test_equal_sized_fields(self):
+        """Equal-sized fields → simple average of periods."""
+        @dataclass
+        class Equal:
+            a: Field = Field(2, 2, period=1)   # 4 blocks
+            b: Field = Field(2, 2, period=9)   # 4 blocks
+
+        node = _walk(Equal())
+        result = _block_weighted_mean_period_from_tree(node)
+        # weighted_sum = 4*1 + 4*9 = 40, total_weight = 8, mean = 5
+        assert result == 5
+
+    def test_empty_node_returns_1(self):
+        """Empty node should return period 1."""
+        @dataclass
+        class Empty:
+            x: int = 5
+
+        node = _walk(Empty())
+        assert _block_weighted_mean_period_from_tree(node) == 1
+
+    def test_minimum_period_is_1(self):
+        """Result should always be at least 1."""
+        @dataclass
+        class ZeroPeriod:
+            a: Field = Field(1, 1, period=0)
+
+        node = _walk(ZeroPeriod())
+        assert _block_weighted_mean_period_from_tree(node) >= 1
+
+    def test_coarse_field_period_uses_weighted_mean(self):
+        """Coarse-grained fields should use weighted mean period."""
+        @dataclass
+        class Inner:
+            big_fast: Field = Field(10, 10, period=1)
+            small_slow: Field = Field(1, 1, period=100)
+
+        @dataclass
+        class Outer:
+            inner: Inner = dc_field(default_factory=Inner)
+            top: Field = Field(1, 1)
+
+        bound = compile_schema(Outer(), T=4, H=16, W=16, d_model=64)
+        # The coarse-grained field for 'inner' should have period ≈ 2
+        # (dominated by the 10x10 fast field)
+        inner_spec = bound["inner"].spec
+        assert inner_spec.period == 2

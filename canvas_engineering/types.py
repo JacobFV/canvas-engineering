@@ -2,7 +2,7 @@
 
 Declare structured types whose fields are latent regions. Types compose
 (nesting), specialize (inheritance), and replicate (lists). A compiler
-flattens any type hierarchy into a CanvasSchema — a concrete CanvasLayout +
+flattens any type hierarchy into a CanvasSchema -- a concrete CanvasLayout +
 CanvasTopology ready for the diffusion process.
 
 Works with dataclasses, Pydantic models, or any object with Field attributes.
@@ -34,7 +34,7 @@ from canvas_engineering.connectivity import CanvasTopology, Connection
 from canvas_engineering.schema import CanvasSchema
 
 
-# ── Field Declaration ────────────────────────────────────────────────
+# -- Field Declaration ------------------------------------------------
 
 @dataclass(frozen=True)
 class Field:
@@ -68,7 +68,7 @@ class Field:
         return self.h * self.w
 
 
-# ── Layout Strategy ──────────────────────────────────────────────────
+# -- Layout Strategy --------------------------------------------------
 
 class LayoutStrategy(Enum):
     """How to arrange fields on the (H, W) grid."""
@@ -76,30 +76,38 @@ class LayoutStrategy(Enum):
     INTERLEAVED = "interleaved"
 
 
-# ── Connectivity Policy ──────────────────────────────────────────────
+# -- Connectivity Policy ----------------------------------------------
 
 @dataclass
 class ConnectivityPolicy:
     """Default connectivity rules for compiled schemas.
 
+    Every nested type and array element automatically gets a coarse-grained
+    field at its own path. Parent fields connect bidirectionally to the
+    coarse-grained field; the coarse-grained field connects bidirectionally
+    to child fields.
+
+    Coarse-grained field size is configured on the types themselves:
+      - Set ``__coarse__ = Field(h, w)`` on a class to define its
+        default coarse-grained field size when it appears as a child anywhere.
+      - Set ``metadata={"coarse": Field(h, w)}`` on a dataclass field
+        to override the coarse-grained field for that specific parent->child edge.
+      - Falls back to Field(1, 1) if neither is set.
+
     Args:
-        intra: How fields within a type connect.
+        intra: How fields within a single type connect.
             "dense" (default), "isolated", "causal_chain", "star"
-        parent_child: How parent fields connect to child fields.
-            "matched_fields" (default), "hub_spoke", "broadcast",
-            "aggregate", "none"
         array_element: How elements of the same list connect.
             "isolated" (default), "dense", "matched_fields", "ring"
         temporal: Temporal constraint policy for all connections.
             "dense" (default), "causal", "same_frame"
     """
     intra: str = "dense"
-    parent_child: str = "matched_fields"
     array_element: str = "isolated"
     temporal: str = "dense"
 
 
-# ── Tree Walking (Internal) ──────────────────────────────────────────
+# -- Tree Walking (Internal) ------------------------------------------
 
 @dataclass
 class _FieldEntry:
@@ -117,6 +125,7 @@ class _TypeNode:
     children: List['_TypeNode']
     arrays: Dict[str, List['_TypeNode']]
     parent: Optional['_TypeNode']
+    coarse_field: Optional[Field] = None  # resolved coarse-grained field config for this node
 
 
 _SKIP_TYPES = (int, float, str, bool, type(None), bytes, torch.Tensor, Field)
@@ -158,8 +167,37 @@ def _has_canvas_fields(obj: Any) -> bool:
     return False
 
 
+def _resolve_coarse_field(child_obj: Any, parent_obj: Any, attr_name: str) -> Field:
+    """Determine the coarse-grained Field for a child.
+
+    Priority:
+      1. Parent's dataclass field metadata: ``metadata={"coarse": Field(...)}``
+      2. Child type's ``__coarse__`` class attribute
+      3. Default: ``Field(1, 1)``
+    """
+    # 1. Parent field metadata override
+    if hasattr(parent_obj, '__dataclass_fields__'):
+        dc_fields = parent_obj.__dataclass_fields__
+        if attr_name in dc_fields:
+            meta = dc_fields[attr_name].metadata
+            if meta and "coarse" in meta:
+                gw = meta["coarse"]
+                if isinstance(gw, Field):
+                    return gw
+
+    # 2. Child type's __coarse__
+    child_type = type(child_obj)
+    type_gw = getattr(child_type, '__coarse__', None)
+    if isinstance(type_gw, Field):
+        return type_gw
+
+    # 3. Default
+    return Field(1, 1)
+
+
 def _walk(obj: Any, path: str = "", local_name: str = "",
-          parent: Optional[_TypeNode] = None) -> _TypeNode:
+          parent: Optional[_TypeNode] = None,
+          parent_obj: Any = None) -> _TypeNode:
     """Walk an object tree and build a _TypeNode hierarchy."""
     node = _TypeNode(
         path=path, fields=[], children=[],
@@ -182,14 +220,18 @@ def _walk(obj: Any, path: str = "", local_name: str = "",
             for i, item in enumerate(value):
                 if not isinstance(item, _SKIP_TYPES) and _has_canvas_fields(item):
                     elem_path = "{}[{}]".format(child_path, i)
-                    elem_node = _walk(item, elem_path, attr_name, parent=node)
+                    elem_node = _walk(item, elem_path, attr_name,
+                                      parent=node, parent_obj=obj)
+                    elem_node.coarse_field = _resolve_coarse_field(item, obj, attr_name)
                     elements.append(elem_node)
             if elements:
                 node.arrays[attr_name] = elements
 
         elif not isinstance(value, _SKIP_TYPES):
             if _has_canvas_fields(value):
-                child_node = _walk(value, child_path, attr_name, parent=node)
+                child_node = _walk(value, child_path, attr_name,
+                                   parent=node, parent_obj=obj)
+                child_node.coarse_field = _resolve_coarse_field(value, obj, attr_name)
                 node.children.append(child_node)
 
     return node
@@ -208,7 +250,168 @@ def _flatten_fields(node: _TypeNode) -> List[Tuple[str, Field, str]]:
     return result
 
 
-# ── Packing (Internal) ───────────────────────────────────────────────
+# -- Coarse Field Insertion (Internal) --------------------------------
+
+def _block_weighted_mean_period_from_tree(node: _TypeNode) -> int:
+    """Get block-count-weighted mean period from all Fields in a subtree.
+
+    Each field's period is weighted by its canvas footprint (h * w).
+    Fields with more positions have more influence on the coarse-grained
+    summary's update rate, so the summary tracks the dominant timescale
+    of the subtree rather than giving every field an equal vote.
+    """
+    all_fields = _flatten_fields_raw(node)
+    if not all_fields:
+        return 1
+    weighted_sum = 0
+    total_weight = 0
+    for fe in all_fields:
+        block_count = fe.field.h * fe.field.w
+        weighted_sum += fe.field.period * block_count
+        total_weight += block_count
+    if total_weight == 0:
+        return 1
+    return max(1, round(weighted_sum / total_weight))
+
+
+def _flatten_fields_raw(node: _TypeNode) -> List[_FieldEntry]:
+    """Flatten to raw _FieldEntry list (for internal use)."""
+    result = list(node.fields)
+    for child in node.children:
+        result.extend(_flatten_fields_raw(child))
+    for elems in node.arrays.values():
+        for elem in elems:
+            result.extend(_flatten_fields_raw(elem))
+    return result
+
+
+def _insert_coarse_fields(node: _TypeNode) -> _TypeNode:
+    """Insert coarse-grained fields between parent and each child/array-element.
+
+    For each child node, creates a new intermediate node containing a
+    coarse-grained field at the child's path. The original child becomes a
+    grandchild. Cross-level attention bottlenecks through the coarse-grained field.
+
+    Coarse-grained field params come from the child's ``coarse_field`` (resolved
+    during _walk from ``__coarse__`` class attrs and field metadata).
+
+    Before: Parent -> [Child1(fields...), Child2(fields...)]
+    After:  Parent -> [CG1(coarse) -> Child1(fields...), CG2(coarse) -> Child2(fields...)]
+
+    Returns the modified node (in-place).
+    """
+    # Process children
+    new_children = []
+    for child in node.children:
+        _insert_coarse_fields(child)  # recurse first
+
+        local = child.path.rsplit(".", 1)[-1] if "." in child.path else child.path
+        cg_template = child.coarse_field or Field(1, 1)
+        mp = _block_weighted_mean_period_from_tree(child)
+        coarse_field = Field(
+            cg_template.h, cg_template.w, period=mp,
+            semantic_type=cg_template.semantic_type or "coarse: {}".format(child.path),
+            is_output=cg_template.is_output,
+            loss_weight=cg_template.loss_weight,
+            attn=cg_template.attn,
+        )
+        coarse_entry = _FieldEntry(
+            path=child.path, field=coarse_field, local_name=local,
+        )
+
+        coarse_node = _TypeNode(
+            path=child.path,
+            fields=[coarse_entry],
+            children=[child],
+            arrays={},
+            parent=node,
+        )
+        child.parent = coarse_node
+        new_children.append(coarse_node)
+    node.children = new_children
+
+    # Process array elements
+    new_arrays = {}
+    for array_name, elements in node.arrays.items():
+        new_elements = []
+        for elem in elements:
+            _insert_coarse_fields(elem)  # recurse first
+
+            cg_template = elem.coarse_field or Field(1, 1)
+            mp = _block_weighted_mean_period_from_tree(elem)
+            coarse_field = Field(
+                cg_template.h, cg_template.w, period=mp,
+                semantic_type=cg_template.semantic_type or "coarse: {}".format(elem.path),
+                is_output=cg_template.is_output,
+                loss_weight=cg_template.loss_weight,
+                attn=cg_template.attn,
+            )
+            coarse_entry = _FieldEntry(
+                path=elem.path, field=coarse_field, local_name=array_name,
+            )
+
+            coarse_node = _TypeNode(
+                path=elem.path,
+                fields=[coarse_entry],
+                children=[elem],
+                arrays={},
+                parent=node,
+            )
+            elem.parent = coarse_node
+            new_elements.append(coarse_node)
+        new_arrays[array_name] = new_elements
+    node.arrays = new_arrays
+
+    return node
+
+
+# -- Auto-sizing (Internal) -------------------------------------------
+
+def _auto_canvas_size(
+    fields: List[Tuple[str, int, int]],
+    pad: float = 1.15,
+) -> Tuple[int, int]:
+    """Compute minimum (H, W) that can pack all fields.
+
+    Uses the same strip-packing algorithm as _pack_strip. Computes the
+    smallest roughly-square grid that fits everything, with a padding factor.
+
+    Args:
+        fields: [(path, h, w), ...] from flattened field list.
+        pad: Padding factor (1.15 = 15% slack).
+
+    Returns:
+        (H, W) tuple.
+    """
+    if not fields:
+        return (4, 4)
+
+    import math
+
+    max_w = max(w for _, _, w in fields)
+    max_h = max(h for _, h, _ in fields)
+    total_area = sum(h * w for _, h, w in fields)
+
+    side = int(math.ceil(math.sqrt(total_area * pad)))
+    W = max(side, max_w)
+
+    # Simulate strip packing to find needed H
+    row_h = 0
+    row_w = 0
+    row_max_h = 0
+    for _, h, w in fields:
+        if row_w + w > W:
+            row_h += row_max_h
+            row_w = 0
+            row_max_h = 0
+        row_w += w
+        row_max_h = max(row_max_h, h)
+    needed_H = row_h + row_max_h
+    H = max(int(math.ceil(needed_H * pad)), max_h)
+    return (H, W)
+
+
+# -- Packing (Internal) -----------------------------------------------
 
 def _pack_strip(
     fields: List[Tuple[str, int, int]],
@@ -268,7 +471,7 @@ def _pack_interleaved(
     return _pack_strip(ordered, H, W)
 
 
-# ── Connectivity Generation (Internal) ───────────────────────────────
+# -- Connectivity Generation (Internal) -------------------------------
 
 def _intra_connections(node: _TypeNode, policy: ConnectivityPolicy) -> List[Connection]:
     """Connect fields within a single type instance."""
@@ -303,39 +506,20 @@ def _intra_connections(node: _TypeNode, policy: ConnectivityPolicy) -> List[Conn
 
 
 def _parent_child_connections(
-    parent: _TypeNode, child: _TypeNode, policy: ConnectivityPolicy,
+    parent: _TypeNode, child: _TypeNode,
 ) -> List[Connection]:
-    """Connect parent fields to child fields."""
+    """Connect parent fields to child fields (bidirectional).
+
+    With coarse-grained field insertion, this is always called between a
+    parent node and a coarse-grained node (or coarse-grained node and its
+    child). The coarse-grained field provides the bottleneck -- no policy
+    dispatch needed.
+    """
     conns = []
-
-    if policy.parent_child == "none":
-        return conns
-
-    elif policy.parent_child == "matched_fields":
-        for pf in parent.fields:
-            for cf in child.fields:
-                if pf.local_name == cf.local_name:
-                    conns.append(Connection(src=pf.path, dst=cf.path))
-                    conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "hub_spoke":
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=pf.path, dst=cf.path))
-                conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "broadcast":
-        # Children read from parent (parent is dst/keys, child is src/queries)
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=cf.path, dst=pf.path))
-
-    elif policy.parent_child == "aggregate":
-        # Parent reads from children (child is dst/keys, parent is src/queries)
-        for pf in parent.fields:
-            for cf in child.fields:
-                conns.append(Connection(src=pf.path, dst=cf.path))
-
+    for pf in parent.fields:
+        for cf in child.fields:
+            conns.append(Connection(src=pf.path, dst=cf.path))
+            conns.append(Connection(src=cf.path, dst=pf.path))
     return conns
 
 
@@ -389,13 +573,13 @@ def _generate_connections(
     # Recurse into single children
     for child in node.children:
         conns.extend(_generate_connections(child, policy))
-        conns.extend(_parent_child_connections(node, child, policy))
+        conns.extend(_parent_child_connections(node, child))
 
     # Recurse into array elements
     for elements in node.arrays.values():
         for elem in elements:
             conns.extend(_generate_connections(elem, policy))
-            conns.extend(_parent_child_connections(node, elem, policy))
+            conns.extend(_parent_child_connections(node, elem))
         conns.extend(_array_element_connections(elements, policy))
 
     return conns
@@ -414,6 +598,8 @@ def _apply_temporal(
             result.append(Connection(
                 src=c.src, dst=c.dst, weight=c.weight,
                 t_src=0, t_dst=0, fn=c.fn,
+                temporal_fill=c.temporal_fill,
+                interpolation_order=c.interpolation_order,
             ))
         elif policy.temporal == "causal":
             if c.src == c.dst:
@@ -421,16 +607,22 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=0, fn=c.fn,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
             else:
                 # Cross-connection: prev-frame only
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    temporal_fill=c.temporal_fill,
+                    interpolation_order=c.interpolation_order,
                 ))
     return result
 
@@ -440,14 +632,15 @@ def _deduplicate(connections: List[Connection]) -> List[Connection]:
     seen = set()
     result = []
     for c in connections:
-        key = (c.src, c.dst, c.weight, c.t_src, c.t_dst, c.fn)
+        key = (c.src, c.dst, c.weight, c.t_src, c.t_dst, c.fn,
+               c.temporal_fill, c.interpolation_order)
         if key not in seen:
             seen.add(key)
             result.append(c)
     return result
 
 
-# ── Bound Schema ─────────────────────────────────────────────────────
+# -- Bound Schema -----------------------------------------------------
 
 class BoundField:
     """A Field bound to a compiled canvas region.
@@ -571,7 +764,7 @@ class BoundSchema:
         embedding function, then creates a SemanticConditioner.
 
         Args:
-            embed_fn: Callable taking list[str] → list[list[float]].
+            embed_fn: Callable taking list[str] -> list[list[float]].
                 Each string is a semantic type description.
             embed_dim: Dimension of the embeddings returned by embed_fn.
             freeze_embeddings: If True, freeze the raw embeddings.
@@ -626,14 +819,14 @@ class BoundSchema:
             len(self._fields), self.layout.num_positions)
 
 
-# ── Compilation ──────────────────────────────────────────────────────
+# -- Compilation ------------------------------------------------------
 
 def compile_schema(
     root: Any,
-    T: int,
-    H: int,
-    W: int,
-    d_model: int,
+    T: int = 1,
+    H: Optional[int] = None,
+    W: Optional[int] = None,
+    d_model: int = 64,
     connectivity: Optional[ConnectivityPolicy] = None,
     layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
     t_current: int = 0,
@@ -646,14 +839,23 @@ def compile_schema(
 
     Works with dataclasses, Pydantic models, or plain objects.
 
+    When H and/or W are None, they are auto-computed from the declared field
+    dimensions -- like a C compiler sizing a struct from its members.
+
+    Every nested type and array element automatically gets a coarse-grained
+    field at its own path. Coarse-grained field size is configured on the types:
+      - ``__coarse__ = Field(h, w)`` on the child class
+      - ``metadata={"coarse": Field(h, w)}`` on the parent's field
+      - Falls back to Field(1, 1)
+
     Args:
         root: Object with Field attributes. Lists create array regions.
-        T: Temporal extent of the canvas.
-        H: Height of the canvas grid.
-        W: Width of the canvas grid.
-        d_model: Latent dimensionality per position.
+        T: Temporal extent of the canvas. Default 1.
+        H: Height of the canvas grid. None = auto-sized.
+        W: Width of the canvas grid. None = auto-sized.
+        d_model: Latent dimensionality per position. Default 64.
         connectivity: Connectivity policy. Default: dense intra,
-            matched_fields parent-child, isolated arrays, dense temporal.
+            isolated arrays, dense temporal.
         layout_strategy: "packed" (default) or "interleaved".
         t_current: Timestep boundary for output mask.
 
@@ -669,6 +871,10 @@ def compile_schema(
             joints: Field = Field(1, 8)
             action: Field = Field(1, 8, loss_weight=2.0)
 
+        # Auto-sized canvas:
+        bound = compile_schema(Robot(), T=8, d_model=256)
+
+        # Explicit canvas:
         bound = compile_schema(Robot(), T=8, H=16, W=16, d_model=256)
     """
     if connectivity is None:
@@ -680,11 +886,23 @@ def compile_schema(
     # 1. Walk the object tree
     tree = _walk(root)
 
+    # 1b. Insert coarse-grained fields for all nested types
+    _insert_coarse_fields(tree)
+
     # 2. Flatten to field list
     flat = _flatten_fields(tree)
 
     if not flat:
         raise ValueError("No Field attributes found in object tree")
+
+    # 2b. Auto-size canvas if H or W not specified
+    if H is None or W is None:
+        pack_dims = [(path, f.h, f.w) for path, f, _ in flat]
+        auto_H, auto_W = _auto_canvas_size(pack_dims)
+        if H is None:
+            H = auto_H
+        if W is None:
+            W = auto_W
 
     # 3. Pack onto grid
     if layout_strategy == LayoutStrategy.INTERLEAVED:

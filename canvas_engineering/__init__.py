@@ -10,16 +10,41 @@ Quick start:
 """
 
 from canvas_engineering.canvas import (
-    ATTENTION_TYPES, CanvasLayout, RegionSpec, SpatiotemporalCanvas,
-    transfer_distance,
+    ATTENTION_TYPES, CanvasLayout, PeriodEmbedding, RegionSpec,
+    SpatiotemporalCanvas, transfer_distance,
 )
 from canvas_engineering.looped_block import LoopedBlockWrapper
 from canvas_engineering.graft import graft_looped_blocks, freeze_full, freeze_half
 from canvas_engineering.curriculum import CurriculumScheduler
 from canvas_engineering.action_heads import ActionHead
 from canvas_engineering.sharpening import SharpeningSchedule
-from canvas_engineering.connectivity import Connection, CanvasTopology
+from canvas_engineering.connectivity import (
+    Connection, CanvasTopology, TemporalFill,
+)
 from canvas_engineering.schema import CanvasSchema
+from canvas_engineering.attention import (
+    ATTENTION_REGISTRY,
+    create_attention,
+    register_attention,
+    CrossAttention,
+    LinearAttention,
+    CosineAttention,
+    SigmoidAttention,
+    GatedAttention,
+    PoolingAttention,
+    CopyAttention,
+    NoneAttention,
+    PerceiverAttention,
+    SparseAttention,
+    LocalAttention,
+    RandomFixedAttention,
+    MixtureAttention,
+    MambaAttention,
+    RWKVAttention,
+    HyenaAttention,
+    CogVideoXAttention,
+)
+from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
     BoundField, BoundSchema, compile_schema,
@@ -30,8 +55,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.1.1"
-# TODO: Bump to 0.2.0 before deploying general-unified-world-model 0.0.3
+__version__ = "0.2.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -48,6 +72,8 @@ __all__ = [
     "SharpeningSchedule",
     "Connection",
     "CanvasTopology",
+    "TemporalFill",
+    "PeriodEmbedding",
     "Field",
     "LayoutStrategy",
     "ConnectivityPolicy",
@@ -57,4 +83,25 @@ __all__ = [
     "SemanticConditioner",
     "auto_semantic_type",
     "compute_semantic_embeddings",
+    "ATTENTION_REGISTRY",
+    "create_attention",
+    "register_attention",
+    "CrossAttention",
+    "LinearAttention",
+    "GatedAttention",
+    "PoolingAttention",
+    "CopyAttention",
+    "NoneAttention",
+    "CosineAttention",
+    "SigmoidAttention",
+    "PerceiverAttention",
+    "SparseAttention",
+    "LocalAttention",
+    "RandomFixedAttention",
+    "MixtureAttention",
+    "MambaAttention",
+    "RWKVAttention",
+    "HyenaAttention",
+    "CogVideoXAttention",
+    "AttentionDispatcher",
 ]
