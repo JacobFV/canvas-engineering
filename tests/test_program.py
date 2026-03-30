@@ -1054,5 +1054,242 @@ class TestDispatcherActiveRegions:
         assert torch.allclose(out_none, out_all, atol=1e-5)
 
 
+# ── Phase 5: Learning recipes + compiler ─────────────────────────────
+
+from canvas_engineering.learning import default_learning, FAMILY_DEFAULTS
+from canvas_engineering.compiler import ProgramCompiler, CompiledProgram
+
+
+class TestDefaultLearning:
+    def test_observation(self):
+        ls = default_learning("observation")
+        assert ls.mode == "ssl_prediction"
+        assert "next_step" in ls.losses
+        assert ls.compile_mode == "freeze"
+
+    def test_state(self):
+        ls = default_learning("state")
+        assert ls.mode == "posterior_match"
+        assert ls.compile_mode == "runtime"
+
+    def test_memory(self):
+        ls = default_learning("memory")
+        assert ls.mode == "retrieval"
+        assert ls.compile_mode == "export"
+
+    def test_residual(self):
+        ls = default_learning("residual")
+        assert ls.mode == "calibration"
+        assert ls.compile_mode == "freeze"
+
+    def test_action(self):
+        ls = default_learning("action")
+        assert ls.mode == "supervised"
+        assert ls.compile_mode == "freeze"
+
+    def test_unknown_family(self):
+        ls = default_learning("custom_thing")
+        assert ls.mode == "supervised"  # default LearningSpec
+
+    def test_all_families_have_defaults(self):
+        from canvas_engineering import REGION_FAMILIES
+        for family in REGION_FAMILIES:
+            ls = default_learning(family)
+            assert ls is not None
+            assert ls.mode != ""
+
+
+class TestProgramCompiler:
+    def test_no_compile_modes_unchanged(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "state": RegionProgram(family="state"),
+                "act": RegionProgram(family="action"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert compiled.active_regions == {"obs", "state", "act"}
+        assert len(compiled.frozen_regions) == 0
+        assert len(compiled.exported_memories) == 0
+
+    def test_freeze_regions(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation", compile_mode="freeze"),
+                "state": RegionProgram(family="state"),
+                "act": RegionProgram(family="action"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert "obs" in compiled.frozen_regions
+        assert "obs" in compiled.active_regions  # frozen but still active
+        assert "state" not in compiled.frozen_regions
+
+    def test_constant_removes_from_active(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(compile_mode="constant"),
+                "state": RegionProgram(),
+                "act": RegionProgram(),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert "obs" not in compiled.active_regions
+        assert "obs" in compiled.constant_regions
+
+    def test_export_removes_from_active(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(),
+                "state": RegionProgram(),
+                "act": RegionProgram(compile_mode="export"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert "act" not in compiled.active_regions
+        assert "act" in compiled.exported_memories
+
+    def test_dead_connections_eliminated(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(),
+                "state": RegionProgram(compile_mode="export"),  # removed
+                "act": RegionProgram(),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        # Connections involving "state" should be gone
+        for c in compiled.active_connections:
+            assert c.src != "state" and c.dst != "state"
+
+    def test_learning_spec_compile_mode(self):
+        """LearningSpec.compile_mode takes effect."""
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    learning=LearningSpec(compile_mode="freeze"),
+                ),
+                "state": RegionProgram(),
+                "act": RegionProgram(),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert "obs" in compiled.frozen_regions
+
+    def test_reduced_schema_excludes_eliminated(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(),
+                "state": RegionProgram(compile_mode="constant"),
+                "act": RegionProgram(compile_mode="export"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert "state" not in compiled.schema.layout.regions
+        assert "act" not in compiled.schema.layout.regions
+        assert "obs" in compiled.schema.layout.regions
+
+    def test_n_eliminated(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(),
+                "state": RegionProgram(compile_mode="constant"),
+                "act": RegionProgram(compile_mode="export"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        assert compiled.n_eliminated == 2
+
+    def test_summary(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(compile_mode="freeze"),
+                "state": RegionProgram(compile_mode="export"),
+                "act": RegionProgram(),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        s = compiled.summary()
+        assert "CompiledProgram" in s
+        assert "frozen" in s
+        assert "exported" in s
+
+    def test_repr(self):
+        schema = _make_schema()
+        prog = CanvasProgram(schema=schema)
+        compiled = ProgramCompiler(prog).compile()
+        assert "CompiledProgram" in repr(compiled)
+
+    def test_end_to_end_mixed_modes(self):
+        """Full compile with mixed modes: freeze + export + runtime."""
+        layout = CanvasLayout(T=4, H=4, W=4, d_model=32, regions={
+            "vision": RegionSpec(bounds=(0, 4, 0, 2, 0, 2)),
+            "belief": RegionSpec(bounds=(0, 4, 2, 3, 0, 2)),
+            "memory": RegionSpec(bounds=(0, 4, 3, 4, 0, 2)),
+            "error": RegionSpec(bounds=(0, 4, 0, 2, 2, 3), carrier="residual"),
+            "action": RegionSpec(bounds=(0, 4, 2, 4, 2, 3)),
+        })
+        topology = CanvasTopology(connections=[
+            Connection(src="belief", dst="vision"),
+            Connection(src="belief", dst="memory"),
+            Connection(src="memory", dst="belief"),
+            Connection(src="belief", dst="error"),
+            Connection(src="belief", dst="action"),
+            Connection(src="action", dst="belief"),
+        ])
+        schema = CanvasSchema(layout=layout, topology=topology)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "vision": RegionProgram(family="observation", compile_mode="freeze"),
+                "belief": RegionProgram(family="state"),
+                "memory": RegionProgram(family="memory", compile_mode="export"),
+                "error": RegionProgram(family="residual", compile_mode="freeze"),
+                "action": RegionProgram(family="action", compile_mode="freeze"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+
+        # Memory exported, removed from active
+        assert "memory" not in compiled.active_regions
+        assert "memory" in compiled.exported_memories
+
+        # Frozen but still active
+        assert "vision" in compiled.active_regions
+        assert "vision" in compiled.frozen_regions
+        assert "error" in compiled.frozen_regions
+        assert "action" in compiled.frozen_regions
+
+        # Belief still runtime
+        assert "belief" in compiled.active_regions
+        assert "belief" not in compiled.frozen_regions
+
+        # Connections to/from memory are eliminated
+        for c in compiled.active_connections:
+            assert c.src != "memory" and c.dst != "memory"
+
+        # Reduced schema doesn't have memory
+        assert "memory" not in compiled.schema.layout.regions
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

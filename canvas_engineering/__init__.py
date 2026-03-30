@@ -45,6 +45,8 @@ from canvas_engineering.attention import (
     CogVideoXAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
+from canvas_engineering.learning import default_learning, FAMILY_DEFAULTS
+from canvas_engineering.compiler import ProgramCompiler, CompiledProgram
 from canvas_engineering.scheduling import RegionScheduler
 from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
@@ -125,4 +127,8 @@ __all__ = [
     "ResidualSpec",
     "ResidualAccumulator",
     "RegionScheduler",
+    "default_learning",
+    "FAMILY_DEFAULTS",
+    "ProgramCompiler",
+    "CompiledProgram",
 ]
