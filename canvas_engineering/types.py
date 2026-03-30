@@ -984,6 +984,7 @@ def compile_schema(
         t_extent = min(t_extent, T)
         # Auto-generate semantic_type from path if not explicitly set
         sem_type = f.semantic_type if f.semantic_type else auto_semantic_type(path)
+        carrier = f.carrier if f.carrier else "deterministic"
         regions[path] = RegionSpec(
             bounds=(0, t_extent, h0, h1, w0, w1),
             period=f.period,
@@ -991,6 +992,7 @@ def compile_schema(
             loss_weight=f.loss_weight,
             default_attn=f.attn,
             semantic_type=sem_type,
+            carrier=carrier,
         )
 
     # 5. Generate connectivity

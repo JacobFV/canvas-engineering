@@ -643,5 +643,210 @@ class TestSchemaRoundtripOperator:
         assert c.write_mode == "add"
 
 
+# ── Phase 3: Carriers + residual summaries ───────────────────────────
+
+from canvas_engineering import ResidualSpec, ResidualAccumulator
+from canvas_engineering.dispatch import AttentionDispatcher
+
+
+class TestRegionSpecCarrier:
+    def test_default_carrier(self):
+        spec = RegionSpec(bounds=(0, 1, 0, 1, 0, 1))
+        assert spec.carrier == "deterministic"
+
+    def test_custom_carrier(self):
+        spec = RegionSpec(bounds=(0, 1, 0, 1, 0, 1), carrier="diffusive")
+        assert spec.carrier == "diffusive"
+
+    def test_carrier_frozen(self):
+        spec = RegionSpec(bounds=(0, 1, 0, 1, 0, 1))
+        with pytest.raises(AttributeError):
+            spec.carrier = "diffusive"
+
+    def test_carrier_schema_roundtrip(self, tmp_path):
+        schema = CanvasSchema(
+            layout=CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+                "a": RegionSpec(bounds=(0, 2, 0, 1, 0, 1), carrier="diffusive"),
+                "b": (0, 2, 1, 2, 0, 1),
+            }),
+        )
+        path = tmp_path / "schema.json"
+        schema.to_json(str(path))
+        loaded = CanvasSchema.from_json(str(path))
+        assert loaded.layout.region_spec("a").carrier == "diffusive"
+        assert loaded.layout.region_spec("b").carrier == "deterministic"
+
+    def test_old_json_no_carrier(self, tmp_path):
+        import json as json_mod
+        path = tmp_path / "old.json"
+        with open(path, "w") as f:
+            json_mod.dump({
+                "layout": {"T": 2, "H": 2, "W": 2, "d_model": 16},
+                "regions": {"a": {"bounds": [0, 2, 0, 1, 0, 1], "period": 2}},
+                "version": "0.2.0",
+            }, f)
+        loaded = CanvasSchema.from_json(str(path))
+        assert loaded.layout.region_spec("a").carrier == "deterministic"
+
+
+class TestResidualSpec:
+    def test_defaults(self):
+        spec = ResidualSpec()
+        assert spec.kinds == ("prediction",)
+        assert spec.reduce == "max_mean"
+        assert spec.decay == 0.95
+
+    def test_custom(self):
+        spec = ResidualSpec(kinds=("prediction", "novelty"), reduce="mean", decay=0.9)
+        assert len(spec.kinds) == 2
+        assert spec.reduce == "mean"
+
+    def test_frozen(self):
+        spec = ResidualSpec()
+        with pytest.raises(AttributeError):
+            spec.decay = 0.5
+
+
+class TestResidualAccumulator:
+    def test_init(self):
+        acc = ResidualAccumulator(["err_a", "err_b"])
+        assert len(acc.region_names) == 2
+        assert acc.summaries() == {"err_a": {"prediction": 0.0}, "err_b": {"prediction": 0.0}}
+
+    def test_update_changes_summary(self):
+        acc = ResidualAccumulator(["err"])
+        error = torch.ones(2, 4, 8)
+        acc.update("err", error)
+        s = acc.summaries()
+        assert s["err"]["prediction"] > 0.0
+
+    def test_ema_decay(self):
+        spec = ResidualSpec(decay=0.5)
+        acc = ResidualAccumulator(["err"], spec)
+        # First update: summary = 0.5 * 0 + 0.5 * 1.0 = 0.5
+        acc.update("err", torch.ones(1, 1, 1))
+        s1 = acc.summaries()["err"]["prediction"]
+        assert abs(s1 - 0.5) < 1e-5
+        # Second update with same value: summary = 0.5 * 0.5 + 0.5 * 1.0 = 0.75
+        acc.update("err", torch.ones(1, 1, 1))
+        s2 = acc.summaries()["err"]["prediction"]
+        assert abs(s2 - 0.75) < 1e-5
+
+    def test_multiple_kinds(self):
+        spec = ResidualSpec(kinds=("max_val", "mean_val"))
+        acc = ResidualAccumulator(["err"], spec)
+        acc.update("err", torch.tensor([1.0, 2.0, 3.0]))
+        s = acc.summaries()["err"]
+        assert "max_val" in s
+        assert "mean_val" in s
+        assert s["max_val"] > s["mean_val"]  # max > mean for [1,2,3]
+
+    def test_multiple_regions(self):
+        acc = ResidualAccumulator(["a", "b"])
+        acc.update("a", torch.ones(1))
+        acc.update("b", torch.ones(1) * 2)
+        s = acc.summaries()
+        assert s["b"]["prediction"] > s["a"]["prediction"]
+
+    def test_reset(self):
+        acc = ResidualAccumulator(["err"])
+        acc.update("err", torch.ones(1))
+        acc.reset()
+        assert acc.summaries()["err"]["prediction"] == 0.0
+
+    def test_reduce_mean(self):
+        spec = ResidualSpec(reduce="mean")
+        acc = ResidualAccumulator(["err"], spec)
+        acc.update("err", torch.tensor([1.0, 3.0]))
+        s = acc.summaries()["err"]["prediction"]
+        assert abs(s - (1.0 - 0.95) * 2.0) < 1e-5  # (1-decay) * mean([1,3])
+
+    def test_reduce_max(self):
+        spec = ResidualSpec(reduce="max")
+        acc = ResidualAccumulator(["err"], spec)
+        acc.update("err", torch.tensor([1.0, 3.0]))
+        s = acc.summaries()["err"]["prediction"]
+        assert abs(s - (1.0 - 0.95) * 3.0) < 1e-5  # (1-decay) * max([1,3])
+
+    def test_reduce_l2(self):
+        spec = ResidualSpec(reduce="l2")
+        acc = ResidualAccumulator(["err"], spec)
+        acc.update("err", torch.tensor([3.0, 4.0]))
+        s = acc.summaries()["err"]["prediction"]
+        expected = (1.0 - 0.95) * 5.0  # norm of [3,4] = 5
+        assert abs(s - expected) < 1e-4
+
+    def test_repr(self):
+        acc = ResidualAccumulator(["a", "b"])
+        r = repr(acc)
+        assert "ResidualAccumulator" in r
+        assert "regions=2" in r
+
+
+class TestDispatcherResidual:
+    def test_no_accumulator_backward_compat(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+            "b": (0, 2, 1, 2, 0, 1),
+        })
+        topo = CanvasTopology(connections=[Connection(src="a", dst="b")])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=16, n_heads=2)
+        x = torch.randn(1, layout.num_positions, 16)
+        out = dispatcher(x)
+        assert out.shape == x.shape
+        assert dispatcher.summaries is None
+
+    def test_with_accumulator(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "src": (0, 2, 0, 1, 0, 1),
+            "err": RegionSpec(bounds=(0, 2, 1, 2, 0, 1), carrier="residual"),
+        })
+        topo = CanvasTopology(connections=[Connection(src="src", dst="err")])
+        acc = ResidualAccumulator(["err"])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=16, n_heads=2,
+                                         residual_accumulator=acc)
+        x = torch.randn(1, layout.num_positions, 16)
+        out = dispatcher(x)
+        assert out.shape == x.shape
+        s = dispatcher.summaries
+        assert s is not None
+        assert "err" in s
+
+    def test_summaries_property(self):
+        layout = CanvasLayout(T=1, H=2, W=1, d_model=8, regions={
+            "a": (0, 1, 0, 1, 0, 1),
+        })
+        topo = CanvasTopology(connections=[Connection(src="a", dst="a")])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=8, n_heads=1)
+        assert dispatcher.summaries is None
+
+
+class TestCarrierPropagation:
+    def test_field_carrier_to_region_spec(self):
+        @dataclass
+        class T:
+            video: Field = Field(2, 2, carrier="diffusive")
+            joints: Field = Field(1, 2)
+
+        bound = compile_schema(T(), T=4, H=8, W=8, d_model=32)
+        assert bound["video"].spec.carrier == "diffusive"
+        assert bound["joints"].spec.carrier == "deterministic"
+
+    def test_compile_program_carrier(self):
+        @dataclass
+        class T:
+            obs: Field = Field(2, 2, family="observation", carrier="diffusive")
+            state: Field = Field(2, 2, family="state", carrier="filter")
+
+        _, prog = compile_program(T(), T=4, H=8, W=8, d_model=32)
+        assert prog.regions["obs"].carrier == "diffusive"
+        assert prog.regions["state"].carrier == "filter"
+
+    def test_default_carrier_propagation(self):
+        bound = compile_schema(PlainRobot(), T=4, H=8, W=8, d_model=32)
+        assert bound["camera"].spec.carrier == "deterministic"
+        assert bound["action"].spec.carrier == "deterministic"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

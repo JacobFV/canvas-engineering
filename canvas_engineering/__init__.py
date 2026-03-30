@@ -45,6 +45,7 @@ from canvas_engineering.attention import (
     CogVideoXAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
+from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
     BoundField, BoundSchema, compile_schema, compile_program,
@@ -120,4 +121,6 @@ __all__ = [
     "HyenaAttention",
     "CogVideoXAttention",
     "AttentionDispatcher",
+    "ResidualSpec",
+    "ResidualAccumulator",
 ]
