@@ -80,6 +80,10 @@ class CanvasSchema:
                     cd["t_dst"] = c.t_dst
                 if c.fn is not None:
                     cd["fn"] = c.fn
+                if c.operator != "attend":
+                    cd["operator"] = c.operator
+                if c.write_mode != "add":
+                    cd["write_mode"] = c.write_mode
                 conns.append(cd)
             d["topology"] = conns
 
@@ -142,6 +146,8 @@ class CanvasSchema:
                     t_src=cd.get("t_src", None),
                     t_dst=cd.get("t_dst", None),
                     fn=cd.get("fn", None),
+                    operator=cd.get("operator", "attend"),
+                    write_mode=cd.get("write_mode", "add"),
                 ))
             topology = CanvasTopology(connections=conns)
 

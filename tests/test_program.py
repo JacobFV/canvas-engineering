@@ -461,5 +461,187 @@ class TestCompileProgram:
         assert loaded.regions["camera"].family == "observation"
 
 
+# ── Phase 2: Operator/backend split + auto-wiring ────────────────────
+
+
+class TestConnectionOperator:
+    def test_default_operator(self):
+        c = Connection(src="a", dst="b")
+        assert c.operator == "attend"
+
+    def test_explicit_operator(self):
+        c = Connection(src="a", dst="b", operator="predict")
+        assert c.operator == "predict"
+
+    def test_default_write_mode(self):
+        c = Connection(src="a", dst="b")
+        assert c.write_mode == "add"
+
+    def test_explicit_write_mode(self):
+        c = Connection(src="a", dst="b", write_mode="replace")
+        assert c.write_mode == "replace"
+
+    def test_operator_frozen(self):
+        c = Connection(src="a", dst="b", operator="observe")
+        with pytest.raises(AttributeError):
+            c.operator = "predict"
+
+
+class TestAutoWiring:
+    def test_obs_to_state_is_observe(self):
+        @dataclass
+        class T:
+            obs: Field = Field(2, 2, family="observation")
+            belief: Field = Field(2, 2, family="state")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        obs_to_state = [c for c in conns if c.src == "obs" and c.dst == "belief"]
+        assert any(c.operator == "observe" for c in obs_to_state)
+
+    def test_state_to_action_is_act(self):
+        @dataclass
+        class T:
+            belief: Field = Field(2, 2, family="state")
+            act: Field = Field(1, 2, family="action")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        state_to_act = [c for c in conns if c.src == "belief" and c.dst == "act"]
+        assert any(c.operator == "act" for c in state_to_act)
+
+    def test_state_to_state_is_integrate(self):
+        @dataclass
+        class T:
+            a: Field = Field(2, 2, family="state")
+            b: Field = Field(2, 2, family="state")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        s2s = [c for c in conns if c.src == "a" and c.dst == "b"]
+        assert any(c.operator == "integrate" for c in s2s)
+
+    def test_unknown_family_pair_defaults_attend(self):
+        @dataclass
+        class T:
+            x: Field = Field(2, 2, family="custom_a")
+            y: Field = Field(2, 2, family="custom_b")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        assert all(c.operator == "attend" for c in conns)
+
+    def test_compile_schema_no_operators(self):
+        """compile_schema (not compile_program) leaves all operators as attend."""
+        bound = compile_schema(SimpleRobot(), T=4, H=8, W=8, d_model=64)
+        conns = bound.topology.connections
+        assert all(c.operator == "attend" for c in conns)
+
+    def test_state_to_memory_is_write(self):
+        @dataclass
+        class T:
+            belief: Field = Field(2, 2, family="state")
+            mem: Field = Field(2, 2, family="memory")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        s2m = [c for c in conns if c.src == "belief" and c.dst == "mem"]
+        assert any(c.operator == "write" for c in s2m)
+
+    def test_memory_to_state_is_retrieve(self):
+        @dataclass
+        class T:
+            belief: Field = Field(2, 2, family="state")
+            mem: Field = Field(2, 2, family="memory")
+
+        _, prog = compile_program(T(), T=1, H=8, W=8, d_model=32)
+        conns = prog.schema.topology.connections
+        m2s = [c for c in conns if c.src == "mem" and c.dst == "belief"]
+        assert any(c.operator == "retrieve" for c in m2s)
+
+
+class TestDeduplicateWithOperator:
+    def test_different_operators_not_deduped(self):
+        from canvas_engineering.types import _deduplicate
+        conns = [
+            Connection(src="a", dst="b", operator="observe"),
+            Connection(src="a", dst="b", operator="predict"),
+        ]
+        result = _deduplicate(conns)
+        assert len(result) == 2
+
+    def test_same_operator_deduped(self):
+        from canvas_engineering.types import _deduplicate
+        conns = [
+            Connection(src="a", dst="b", operator="observe"),
+            Connection(src="a", dst="b", operator="observe"),
+        ]
+        result = _deduplicate(conns)
+        assert len(result) == 1
+
+
+class TestSummaryWithOperator:
+    def test_summary_shows_operators(self):
+        topo = CanvasTopology(connections=[
+            Connection(src="a", dst="b", operator="predict"),
+            Connection(src="b", dst="a", operator="observe"),
+        ])
+        s = topo.summary()
+        assert "predict=1" in s
+        assert "observe=1" in s
+
+    def test_summary_omits_attend(self):
+        topo = CanvasTopology(connections=[
+            Connection(src="a", dst="b"),  # operator="attend" (default)
+        ])
+        s = topo.summary()
+        assert "operators" not in s
+
+
+class TestSchemaRoundtripOperator:
+    def test_operator_survives_roundtrip(self, tmp_path):
+        from canvas_engineering import CanvasSchema
+        schema = CanvasSchema(
+            layout=CanvasLayout(T=2, H=2, W=2, d_model=16, regions={"a": (0, 2, 0, 1, 0, 1)}),
+            topology=CanvasTopology(connections=[
+                Connection(src="a", dst="a", operator="integrate"),
+            ]),
+        )
+        path = tmp_path / "schema.json"
+        schema.to_json(str(path))
+        loaded = CanvasSchema.from_json(str(path))
+        assert loaded.topology.connections[0].operator == "integrate"
+
+    def test_write_mode_survives_roundtrip(self, tmp_path):
+        from canvas_engineering import CanvasSchema
+        schema = CanvasSchema(
+            layout=CanvasLayout(T=2, H=2, W=2, d_model=16, regions={"a": (0, 2, 0, 1, 0, 1)}),
+            topology=CanvasTopology(connections=[
+                Connection(src="a", dst="a", write_mode="replace"),
+            ]),
+        )
+        path = tmp_path / "schema.json"
+        schema.to_json(str(path))
+        loaded = CanvasSchema.from_json(str(path))
+        assert loaded.topology.connections[0].write_mode == "replace"
+
+    def test_old_json_loads_with_defaults(self, tmp_path):
+        """JSON without operator/write_mode loads with defaults."""
+        import json
+        path = tmp_path / "old.json"
+        with open(path, "w") as f:
+            json.dump({
+                "layout": {"T": 2, "H": 2, "W": 2, "d_model": 16},
+                "regions": {"a": {"bounds": [0, 2, 0, 1, 0, 1]}},
+                "topology": [{"src": "a", "dst": "a"}],
+                "version": "0.2.0",
+            }, f)
+        from canvas_engineering import CanvasSchema
+        loaded = CanvasSchema.from_json(str(path))
+        c = loaded.topology.connections[0]
+        assert c.operator == "attend"
+        assert c.write_mode == "add"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

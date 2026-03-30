@@ -34,6 +34,54 @@ from canvas_engineering.connectivity import CanvasTopology, Connection
 from canvas_engineering.schema import CanvasSchema
 
 
+# -- Auto-wiring: family pair → default operator ----------------------
+
+DEFAULT_WIRING: Dict[Tuple[str, str], str] = {
+    ("observation", "state"):       "observe",
+    ("state", "observation"):       "predict",
+    ("state", "state"):             "integrate",
+    ("state", "memory"):            "write",
+    ("memory", "state"):            "retrieve",
+    ("state", "action"):            "act",
+    ("action", "state"):            "intervene",
+    ("state", "residual"):          "emit_residual",
+    ("observation", "residual"):    "emit_residual",
+    ("observation", "observation"): "attend",
+    ("action", "action"):           "attend",
+    ("memory", "memory"):           "attend",
+    ("residual", "residual"):       "attend",
+}
+
+
+def _apply_operators(
+    connections: List[Connection],
+    family_map: Dict[str, str],
+) -> List[Connection]:
+    """Replace default operator with family-derived operator where possible.
+
+    Called only from compile_program(), never from compile_schema().
+    """
+    result = []
+    for c in connections:
+        src_family = family_map.get(c.src)
+        dst_family = family_map.get(c.dst)
+        if src_family and dst_family:
+            op = DEFAULT_WIRING.get((src_family, dst_family), "attend")
+        else:
+            op = c.operator
+        if op != c.operator:
+            result.append(Connection(
+                src=c.src, dst=c.dst, weight=c.weight,
+                t_src=c.t_src, t_dst=c.t_dst, fn=c.fn,
+                operator=op, write_mode=c.write_mode,
+                temporal_fill=c.temporal_fill,
+                interpolation_order=c.interpolation_order,
+            ))
+        else:
+            result.append(c)
+    return result
+
+
 # -- Field Declaration ------------------------------------------------
 
 @dataclass(frozen=True)
@@ -606,6 +654,7 @@ def _apply_temporal(
             result.append(Connection(
                 src=c.src, dst=c.dst, weight=c.weight,
                 t_src=0, t_dst=0, fn=c.fn,
+                operator=c.operator, write_mode=c.write_mode,
                 temporal_fill=c.temporal_fill,
                 interpolation_order=c.interpolation_order,
             ))
@@ -615,12 +664,14 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=0, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
@@ -629,6 +680,7 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
@@ -641,6 +693,7 @@ def _deduplicate(connections: List[Connection]) -> List[Connection]:
     result = []
     for c in connections:
         key = (c.src, c.dst, c.weight, c.t_src, c.t_dst, c.fn,
+               c.operator, c.write_mode,
                c.temporal_fill, c.interpolation_order)
         if key not in seen:
             seen.add(key)
@@ -1024,9 +1077,24 @@ def compile_program(
         else:
             region_programs[path] = RegionProgram()
 
-    # 4. Build CanvasProgram
+    # 4. Apply family-derived operators to connections
+    family_map = {}
+    for path, f, _ in flat:
+        if f.family:
+            family_map[path] = f.family
+    schema = bound.schema
+    if schema.topology and family_map:
+        wired_conns = _apply_operators(schema.topology.connections, family_map)
+        schema = CanvasSchema(
+            layout=schema.layout,
+            topology=CanvasTopology(connections=wired_conns),
+            version=schema.version,
+            metadata=schema.metadata,
+        )
+
+    # 5. Build CanvasProgram
     program = CanvasProgram(
-        schema=bound.schema,
+        schema=schema,
         regions=region_programs,
     )
 
