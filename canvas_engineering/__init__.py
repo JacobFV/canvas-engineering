@@ -45,6 +45,7 @@ from canvas_engineering.attention import (
     CogVideoXAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
+from canvas_engineering.scheduling import RegionScheduler
 from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
@@ -123,4 +124,5 @@ __all__ = [
     "AttentionDispatcher",
     "ResidualSpec",
     "ResidualAccumulator",
+    "RegionScheduler",
 ]

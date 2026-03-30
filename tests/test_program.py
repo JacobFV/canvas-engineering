@@ -848,5 +848,211 @@ class TestCarrierPropagation:
         assert bound["action"].spec.carrier == "deterministic"
 
 
+# ── Phase 4: Clocks + event triggers ─────────────────────────────────
+
+from canvas_engineering.scheduling import RegionScheduler
+
+
+def _make_program_with_clocks():
+    schema = _make_schema()
+    return CanvasProgram(
+        schema=schema,
+        regions={
+            "obs": RegionProgram(family="observation"),  # no clock = always active
+            "state": RegionProgram(
+                family="state",
+                clock=ClockSpec(mode="periodic", period=4),
+            ),
+            "act": RegionProgram(
+                family="action",
+                clock=ClockSpec(
+                    mode="on_event",
+                    event_source="err.prediction",
+                    event_threshold=0.5,
+                ),
+            ),
+        },
+    )
+
+
+class TestRegionScheduler:
+    def test_no_clock_always_active(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        active = sched.step(external_t=0)
+        assert "obs" in active
+
+    def test_periodic_fires_on_period(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        assert "state" in sched.step(0)
+        assert "state" not in sched.step(1)
+        assert "state" not in sched.step(2)
+        assert "state" not in sched.step(3)
+        assert "state" in sched.step(4)
+
+    def test_on_event_fires_above_threshold(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        summaries = {"err": {"prediction": 0.8}}
+        active = sched.step(0, summaries=summaries)
+        assert "act" in active
+
+    def test_on_event_does_not_fire_below_threshold(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        summaries = {"err": {"prediction": 0.3}}
+        active = sched.step(0, summaries=summaries)
+        assert "act" not in active
+
+    def test_on_event_no_summaries(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        active = sched.step(0, summaries=None)
+        assert "act" not in active
+
+    def test_boundary_fires(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "consolidator": RegionProgram(
+                    clock=ClockSpec(mode="boundary", event_source="episode_end"),
+                ),
+            },
+        )
+        sched = RegionScheduler(prog)
+        assert "consolidator" not in sched.step(0)
+        assert "consolidator" in sched.step(0, boundary="episode_end")
+        assert "consolidator" not in sched.step(1, boundary="other_event")
+
+    def test_cooldown(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "x": RegionProgram(
+                    clock=ClockSpec(mode="periodic", period=1, cooldown=3),
+                ),
+            },
+        )
+        sched = RegionScheduler(prog)
+        assert "x" in sched.step(0)   # fires, cooldown until t=3
+        assert "x" not in sched.step(1)
+        assert "x" not in sched.step(2)
+        assert "x" in sched.step(3)   # cooldown expired
+
+    def test_max_silence(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "lazy": RegionProgram(
+                    clock=ClockSpec(
+                        mode="on_event",
+                        event_source="err.prediction",
+                        event_threshold=100.0,  # very high, never fires normally
+                        max_silence=5,
+                    ),
+                ),
+            },
+        )
+        sched = RegionScheduler(prog)
+        summaries = {"err": {"prediction": 0.0}}
+        # Should NOT fire for steps 0-3 (event threshold not met)
+        # But the first step will fire due to max_silence (never fired before)
+        active0 = sched.step(0, summaries=summaries)
+        assert "lazy" in active0  # forced by max_silence (never fired)
+        assert "lazy" not in sched.step(1, summaries=summaries)
+        assert "lazy" not in sched.step(2, summaries=summaries)
+        assert "lazy" not in sched.step(3, summaries=summaries)
+        assert "lazy" not in sched.step(4, summaries=summaries)
+        assert "lazy" in sched.step(5, summaries=summaries)  # forced by max_silence
+
+    def test_empty_program(self):
+        schema = _make_schema()
+        prog = CanvasProgram(schema=schema)
+        sched = RegionScheduler(prog)
+        assert sched.step(0) == set()
+
+    def test_reset(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={"x": RegionProgram(clock=ClockSpec(mode="periodic", period=1, cooldown=10))},
+        )
+        sched = RegionScheduler(prog)
+        sched.step(0)  # fires, sets cooldown
+        assert "x" not in sched.step(1)  # cooldown
+        sched.reset()
+        assert "x" in sched.step(1)  # reset cleared cooldown
+
+    def test_repr(self):
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        r = repr(sched)
+        assert "RegionScheduler" in r
+
+
+class TestDispatcherActiveRegions:
+    def test_none_means_all_fire(self):
+        layout = CanvasLayout(T=1, H=2, W=2, d_model=16, regions={
+            "a": (0, 1, 0, 1, 0, 1),
+            "b": (0, 1, 1, 2, 0, 1),
+        })
+        topo = CanvasTopology(connections=[
+            Connection(src="a", dst="b"),
+            Connection(src="b", dst="a"),
+        ])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=16, n_heads=2)
+        x = torch.randn(1, layout.num_positions, 16)
+        out = dispatcher(x, active_regions=None)
+        assert out.shape == x.shape
+
+    def test_skip_inactive_src(self):
+        layout = CanvasLayout(T=1, H=2, W=1, d_model=8, regions={
+            "a": (0, 1, 0, 1, 0, 1),
+            "b": (0, 1, 1, 2, 0, 1),
+        })
+        topo = CanvasTopology(connections=[
+            Connection(src="a", dst="a"),
+            Connection(src="b", dst="a"),
+        ])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=8, n_heads=1)
+        x = torch.randn(1, layout.num_positions, 8)
+        # Only "a" active → "b" connections should be skipped
+        out = dispatcher(x, active_regions={"a"})
+        # b's positions should pass through unchanged
+        b_idx = layout.region_indices("b")
+        assert torch.equal(out[0, b_idx[0]], x[0, b_idx[0]])
+
+    def test_empty_active_regions(self):
+        layout = CanvasLayout(T=1, H=2, W=1, d_model=8, regions={
+            "a": (0, 1, 0, 1, 0, 1),
+        })
+        topo = CanvasTopology(connections=[Connection(src="a", dst="a")])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=8, n_heads=1)
+        x = torch.randn(1, layout.num_positions, 8)
+        out = dispatcher(x, active_regions=set())
+        # All positions pass through unchanged
+        assert torch.equal(out, x)
+
+    def test_all_active_same_as_none(self):
+        layout = CanvasLayout(T=1, H=2, W=1, d_model=8, regions={
+            "a": (0, 1, 0, 1, 0, 1),
+            "b": (0, 1, 1, 2, 0, 1),
+        })
+        topo = CanvasTopology(connections=[
+            Connection(src="a", dst="b"),
+            Connection(src="a", dst="a"),
+        ])
+        dispatcher = AttentionDispatcher(topo, layout, d_model=8, n_heads=1)
+        torch.manual_seed(42)
+        x = torch.randn(1, layout.num_positions, 8)
+        out_none = dispatcher(x, active_regions=None)
+        out_all = dispatcher(x, active_regions={"a", "b"})
+        assert torch.allclose(out_none, out_all, atol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

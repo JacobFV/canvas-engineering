@@ -150,15 +150,19 @@ class AttentionDispatcher(nn.Module):
             self._region_idx[name] = idx
         return idx
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, active_regions: Optional[Set[str]] = None) -> torch.Tensor:
         """Run dispatched attention over all topology connections.
 
         Args:
             x: (B, N, d_model) hidden states.
+            active_regions: Optional set of region names that should update.
+                If None, all regions fire (backward compatible). If provided,
+                connections where src is not in active_regions are skipped
+                and those positions pass through from x unchanged.
 
         Returns:
             (B, N, d_model) updated hidden states. Positions not in any
-            src region are passed through unchanged.
+            src region (or in inactive regions) are passed through unchanged.
         """
         B, N, D = x.shape
         device = x.device
@@ -168,6 +172,9 @@ class AttentionDispatcher(nn.Module):
         weight_map = torch.zeros(N, device=device)
 
         for src, dst, weight, fn_name in self._op_specs:
+            # Skip connections where src is inactive
+            if active_regions is not None and src not in active_regions:
+                continue
             conn_obj = None
             for c in self.topology.connections:
                 if c.src == src and c.dst == dst and self.topology.resolve_fn(c, self.layout) == fn_name:
