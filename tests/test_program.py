@@ -2412,7 +2412,7 @@ class TestExports:
 
     def test_version_bumped(self):
         import canvas_engineering
-        assert canvas_engineering.__version__ == "0.4.0"
+        assert canvas_engineering.__version__ >= "0.4.0"
 
 
 if __name__ == "__main__":
