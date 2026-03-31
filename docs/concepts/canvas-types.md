@@ -49,7 +49,22 @@ Field(
 )
 ```
 
-Fields default to `(1, 1)` — a single canvas position (scalar). This means `Field()` is the simplest possible declaration.
+Fields default to `(1, 1)` -- a single canvas position (scalar). This means `Field()` is the simplest possible declaration.
+
+### v2 process fields
+
+`Field` accepts additional kwargs for v2 typed process semantics. These are read by `compile_program()` to build a `CanvasProgram` alongside the schema:
+
+```python
+Field(
+    h=4, w=4,
+    family="observation",    # v2: region family
+    tags=("rgb",),           # v2: semantic sub-tags
+    carrier="deterministic", # v2: dynamics carrier
+)
+```
+
+`family`, `tags`, and `carrier` are ignored by `compile_schema()` -- they only take effect when you use `compile_program()`, which returns both a `BoundSchema` and a `CanvasProgram`. See [Program Layer](program-layer.md) for details.
 
 ## Composition: nesting and arrays
 

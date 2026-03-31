@@ -30,6 +30,7 @@ Raw 6-tuples auto-wrap as `RegionSpec(bounds=tuple)` — full backward compatibi
 | `semantic_embedding` | `None` | Frozen vector for transfer distance |
 | `embedding_model` | `"openai/text-embedding-3-small"` | Which model produced the embedding |
 | `default_attn` | `"cross_attention"` | Default attention fn for outgoing connections |
+| `carrier` | `"deterministic"` | Dynamics carrier: deterministic, diffusive, filter, memory, residual |
 
 ## Temporal frequency
 
@@ -64,6 +65,7 @@ The `SpatiotemporalCanvas` module manages the tensor with positional + modality 
 - **Empty token**: Learned parameter for unoccupied positions
 - **Modality embeddings**: Learned per-region embedding added during `place()`
 - **Period embedding**: Learned embedding indexed by log-bucketed temporal period, summed into each position so the model knows its native update rate
+- **Carrier field**: Each `RegionSpec` declares a `carrier` (default `"deterministic"`) that describes the region's dynamics. See [Carriers](carriers.md) for the full breakdown
 
 ```python
 canvas_mod = SpatiotemporalCanvas(layout)

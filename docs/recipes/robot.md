@@ -65,3 +65,28 @@ schema.to_json("robot_manipulation_v1.json")
 - **Action** reads from visual via cross-attention and from proprio via pooling (just needs the state vector)
 - **Goal** is gated — the model learns when to pay attention to the instruction vs. relying on visual context
 - **Loss weights** emphasize action and proprioception (2x) over visual reconstruction
+
+## v2: with process semantics
+
+The same schema with typed families, carriers, and auto-wired operators:
+
+```python
+from dataclasses import dataclass
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class Robot:
+    visual: Field = Field(24, 24, family="observation",
+                          semantic_type="RGB video 224x224 30fps front monocular camera")
+    proprio: Field = Field(2, 4, family="observation", attn="linear_attention",
+                           loss_weight=2.0, semantic_type="7-DOF joint positions + velocities 30Hz")
+    action: Field = Field(2, 4, family="action", loss_weight=2.0,
+                          semantic_type="6-DOF end-effector delta pose + gripper")
+    goal: Field = Field(4, 8, family="state", tags=("goal",), is_output=False, period=16,
+                        semantic_type="natural language task instruction")
+
+bound, program = compile_program(Robot(), T=16, H=32, W=32, d_model=768)
+# Auto-wired operators: visual→goal = "observe", action→visual = "act", etc.
+```
+
+`compile_program()` auto-wires the operator for each connection based on family pairs. The `program` object carries learning recipes and compile modes derived from each family's defaults.

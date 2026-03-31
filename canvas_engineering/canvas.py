@@ -36,6 +36,10 @@ class RegionSpec:
         default_attn: Default attention function type for outgoing connections
             from this region. Connections can override this per-edge. See
             ATTENTION_TYPES for the full registry of supported types.
+        carrier: Dynamics carrier for this region. "deterministic" = standard
+            forward latent updates (default). "diffusive" = noise/denoise.
+            "filter" = predict/correct. "memory" = persistent lookup.
+            "residual" = error traces.
     """
     bounds: Tuple[int, int, int, int, int, int]
     period: int = 1
@@ -45,6 +49,7 @@ class RegionSpec:
     semantic_embedding: Optional[Tuple[float, ...]] = None
     embedding_model: str = "openai/text-embedding-3-small"
     default_attn: str = "cross_attention"
+    carrier: str = "deterministic"
 
 
 # Registry of declared attention function types. The schema declares intent;

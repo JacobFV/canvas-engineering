@@ -62,6 +62,9 @@ class AttentionDispatcher(nn.Module):
         dropout: Dropout rate.
         skip_temporal: If True, ignore temporal constraints (t_src/t_dst)
             and treat all connections as dense-in-time.
+        residual_accumulator: Optional ResidualAccumulator for tracking
+            error summaries on residual-carrier regions. Updated as a
+            side effect during forward(). Access via .summaries property.
     """
 
     def __init__(
@@ -72,12 +75,14 @@ class AttentionDispatcher(nn.Module):
         n_heads: int = 4,
         dropout: float = 0.0,
         skip_temporal: bool = False,
+        residual_accumulator=None,
     ):
         super().__init__()
         self.topology = topology
         self.layout = layout
         self.d_model = d_model
         self.skip_temporal = skip_temporal
+        self.residual_accumulator = residual_accumulator
 
         # Resolve all operations: (src, dst, weight, fn_name)
         ops = topology.attention_ops(layout)
@@ -145,15 +150,19 @@ class AttentionDispatcher(nn.Module):
             self._region_idx[name] = idx
         return idx
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, active_regions: Optional[Set[str]] = None) -> torch.Tensor:
         """Run dispatched attention over all topology connections.
 
         Args:
             x: (B, N, d_model) hidden states.
+            active_regions: Optional set of region names that should update.
+                If None, all regions fire (backward compatible). If provided,
+                connections where src is not in active_regions are skipped
+                and those positions pass through from x unchanged.
 
         Returns:
             (B, N, d_model) updated hidden states. Positions not in any
-            src region are passed through unchanged.
+            src region (or in inactive regions) are passed through unchanged.
         """
         B, N, D = x.shape
         device = x.device
@@ -163,6 +172,9 @@ class AttentionDispatcher(nn.Module):
         weight_map = torch.zeros(N, device=device)
 
         for src, dst, weight, fn_name in self._op_specs:
+            # Skip connections where src is inactive
+            if active_regions is not None and src not in active_regions:
+                continue
             conn_obj = None
             for c in self.topology.connections:
                 if c.src == src and c.dst == dst and self.topology.resolve_fn(c, self.layout) == fn_name:
@@ -189,6 +201,14 @@ class AttentionDispatcher(nn.Module):
                 attended = attn_fn(queries, keys, values)  # (B, N_src, D)
                 output[:, src_idx] += attended * weight
                 weight_map[src_idx] += weight
+
+                # Track residual if dst is a residual-carrier region
+                if self.residual_accumulator is not None:
+                    try:
+                        if self.layout.region_spec(dst).carrier == "residual":
+                            self.residual_accumulator.update(dst, (attended - queries).detach())
+                    except (KeyError, AttributeError):
+                        pass
             else:
                 # Temporal: iterate reference frames with fill logic
                 t_src_off = conn_obj.t_src
@@ -258,6 +278,13 @@ class AttentionDispatcher(nn.Module):
             output[:, not_attended] = x[:, not_attended]
 
         return output
+
+    @property
+    def summaries(self):
+        """Current residual summaries, or None if no accumulator."""
+        if self.residual_accumulator is None:
+            return None
+        return self.residual_accumulator.summaries()
 
     def __repr__(self) -> str:
         fn_counts: Dict[str, int] = {}

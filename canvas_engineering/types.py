@@ -34,6 +34,54 @@ from canvas_engineering.connectivity import CanvasTopology, Connection
 from canvas_engineering.schema import CanvasSchema
 
 
+# -- Auto-wiring: family pair → default operator ----------------------
+
+DEFAULT_WIRING: Dict[Tuple[str, str], str] = {
+    ("observation", "state"):       "observe",
+    ("state", "observation"):       "predict",
+    ("state", "state"):             "integrate",
+    ("state", "memory"):            "write",
+    ("memory", "state"):            "retrieve",
+    ("state", "action"):            "act",
+    ("action", "state"):            "intervene",
+    ("state", "residual"):          "emit_residual",
+    ("observation", "residual"):    "emit_residual",
+    ("observation", "observation"): "attend",
+    ("action", "action"):           "attend",
+    ("memory", "memory"):           "attend",
+    ("residual", "residual"):       "attend",
+}
+
+
+def _apply_operators(
+    connections: List[Connection],
+    family_map: Dict[str, str],
+) -> List[Connection]:
+    """Replace default operator with family-derived operator where possible.
+
+    Called only from compile_program(), never from compile_schema().
+    """
+    result = []
+    for c in connections:
+        src_family = family_map.get(c.src)
+        dst_family = family_map.get(c.dst)
+        if src_family and dst_family:
+            op = DEFAULT_WIRING.get((src_family, dst_family), "attend")
+        else:
+            op = c.operator
+        if op != c.operator:
+            result.append(Connection(
+                src=c.src, dst=c.dst, weight=c.weight,
+                t_src=c.t_src, t_dst=c.t_dst, fn=c.fn,
+                operator=op, write_mode=c.write_mode,
+                temporal_fill=c.temporal_fill,
+                interpolation_order=c.interpolation_order,
+            ))
+        else:
+            result.append(c)
+    return result
+
+
 # -- Field Declaration ------------------------------------------------
 
 @dataclass(frozen=True)
@@ -52,6 +100,11 @@ class Field:
         attn: Default attention function type for outgoing connections.
         semantic_type: Human-readable modality description.
         temporal_extent: Number of timesteps this field spans. None = full T.
+        family: Region family for v2 process semantics. None = infer default
+            ("state"). One of: observation, state, memory, residual, action.
+        tags: Semantic sub-tags within a family. E.g., ("belief", "object").
+        carrier: Dynamics carrier. None = infer default ("deterministic").
+            One of: deterministic, diffusive, filter, memory, residual.
     """
     h: int = 1
     w: int = 1
@@ -61,6 +114,9 @@ class Field:
     attn: str = "cross_attention"
     semantic_type: Optional[str] = None
     temporal_extent: Optional[int] = None
+    family: Optional[str] = None
+    tags: Tuple[str, ...] = ()
+    carrier: Optional[str] = None
 
     @property
     def num_positions(self) -> int:
@@ -598,6 +654,7 @@ def _apply_temporal(
             result.append(Connection(
                 src=c.src, dst=c.dst, weight=c.weight,
                 t_src=0, t_dst=0, fn=c.fn,
+                operator=c.operator, write_mode=c.write_mode,
                 temporal_fill=c.temporal_fill,
                 interpolation_order=c.interpolation_order,
             ))
@@ -607,12 +664,14 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=0, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
@@ -621,6 +680,7 @@ def _apply_temporal(
                 result.append(Connection(
                     src=c.src, dst=c.dst, weight=c.weight,
                     t_src=0, t_dst=-1, fn=c.fn,
+                    operator=c.operator, write_mode=c.write_mode,
                     temporal_fill=c.temporal_fill,
                     interpolation_order=c.interpolation_order,
                 ))
@@ -633,6 +693,7 @@ def _deduplicate(connections: List[Connection]) -> List[Connection]:
     result = []
     for c in connections:
         key = (c.src, c.dst, c.weight, c.t_src, c.t_dst, c.fn,
+               c.operator, c.write_mode,
                c.temporal_fill, c.interpolation_order)
         if key not in seen:
             seen.add(key)
@@ -923,6 +984,7 @@ def compile_schema(
         t_extent = min(t_extent, T)
         # Auto-generate semantic_type from path if not explicitly set
         sem_type = f.semantic_type if f.semantic_type else auto_semantic_type(path)
+        carrier = f.carrier if f.carrier else "deterministic"
         regions[path] = RegionSpec(
             bounds=(0, t_extent, h0, h1, w0, w1),
             period=f.period,
@@ -930,6 +992,7 @@ def compile_schema(
             loss_weight=f.loss_weight,
             default_attn=f.attn,
             semantic_type=sem_type,
+            carrier=carrier,
         )
 
     # 5. Generate connectivity
@@ -947,3 +1010,94 @@ def compile_schema(
     schema = CanvasSchema(layout=layout, topology=topology)
 
     return BoundSchema(schema, regions)
+
+
+# -- Program Compilation ----------------------------------------------
+
+def compile_program(
+    root: Any,
+    T: int = 1,
+    H: Optional[int] = None,
+    W: Optional[int] = None,
+    d_model: int = 64,
+    connectivity: Optional[ConnectivityPolicy] = None,
+    layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
+    t_current: int = 0,
+) -> Tuple["BoundSchema", "CanvasProgram"]:
+    """Compile an object hierarchy into a BoundSchema + CanvasProgram.
+
+    Same as compile_schema() but also generates a CanvasProgram with
+    RegionPrograms derived from Field's family/tags/carrier attributes.
+    Fields without family/carrier get default RegionPrograms.
+
+    Args:
+        root: Object with Field attributes.
+        T, H, W, d_model: Canvas dimensions.
+        connectivity: Connectivity policy.
+        layout_strategy: Packing strategy.
+        t_current: Timestep boundary for output mask.
+
+    Returns:
+        (BoundSchema, CanvasProgram) tuple.
+
+    Example:
+        @dataclass
+        class Robot:
+            camera: Field = Field(12, 12, family="observation")
+            joints: Field = Field(1, 8, family="observation", carrier="deterministic")
+            belief: Field = Field(4, 4, family="state", tags=("belief",))
+            action: Field = Field(1, 8, family="action", loss_weight=2.0)
+
+        bound, program = compile_program(Robot(), T=8, d_model=256)
+    """
+    from canvas_engineering.program import CanvasProgram, RegionProgram
+
+    # 1. Compile schema (unchanged)
+    bound = compile_schema(
+        root, T=T, H=H, W=W, d_model=d_model,
+        connectivity=connectivity,
+        layout_strategy=layout_strategy,
+        t_current=t_current,
+    )
+
+    # 2. Walk the type tree to extract Field → RegionProgram mapping
+    tree = _walk(root)
+    _insert_coarse_fields(tree)
+    flat = _flatten_fields(tree)
+    field_map = {path: f for path, f, _ in flat}
+
+    # 3. Build RegionProgram for each region in the compiled schema
+    region_programs = {}
+    for path in bound.field_names:
+        f = field_map.get(path)
+        if f is not None:
+            region_programs[path] = RegionProgram(
+                family=f.family if f.family else "state",
+                tags=f.tags,
+                carrier=f.carrier if f.carrier else "deterministic",
+            )
+        else:
+            region_programs[path] = RegionProgram()
+
+    # 4. Apply family-derived operators to connections
+    family_map = {}
+    for path, f, _ in flat:
+        if f.family:
+            family_map[path] = f.family
+    schema = bound.schema
+    if schema.topology and family_map:
+        wired_conns = _apply_operators(schema.topology.connections, family_map)
+        schema = CanvasSchema(
+            layout=schema.layout,
+            topology=CanvasTopology(connections=wired_conns),
+            version=schema.version,
+            metadata=schema.metadata,
+        )
+
+    # 5. Build CanvasProgram
+    program = CanvasProgram(
+        schema=schema,
+        regions=region_programs,
+    )
+
+    return bound, program

@@ -96,10 +96,14 @@ class Connection:
             When int, constrains src to positions at reference_frame + t_src.
         t_dst: Temporal offset for dst (key/value) positions. None = all timesteps.
             When int, constrains dst to positions at reference_frame + t_dst.
-        fn: Attention function type for this connection. None = use the src
+        fn: Attention backend for this connection. None = use the src
             region's default_attn. See ATTENTION_TYPES in canvas.py for the
-            full registry. The schema declares intent; execution is
-            backend-dependent.
+            full registry.
+        operator: Semantic intent of this edge. "attend" = generic (default).
+            When compile_program() has family info, this is auto-set:
+            observe, predict, correct, bind, retrieve, write, act, etc.
+        write_mode: How output accumulates at destination. "add" = additive
+            (default), "replace" = overwrite, "gate" = learned gate.
         temporal_fill: How to handle missing dst positions at the requested
             timestep. Only applies when t_dst is not None. Default HOLD.
         interpolation_order: For TemporalFill.INTERPOLATE, the IDW order.
@@ -113,6 +117,8 @@ class Connection:
     t_src: Optional[int] = None
     t_dst: Optional[int] = None
     fn: Optional[str] = None
+    operator: str = "attend"
+    write_mode: str = "add"
     temporal_fill: TemporalFill = TemporalFill.HOLD
     interpolation_order: int = 1
 
@@ -527,6 +533,15 @@ class CanvasTopology:
                 fill_counts[c.temporal_fill.value] = fill_counts.get(c.temporal_fill.value, 0) + 1
             fill_summary = ", ".join("{}={}".format(f, n) for f, n in sorted(fill_counts.items()))
             lines.append("  [{} temporal constraints: {}]".format(len(temporal), fill_summary))
+
+        op_counts: Dict[str, int] = {}
+        for c in self.connections:
+            if c.operator != "attend":
+                op_counts[c.operator] = op_counts.get(c.operator, 0) + 1
+        if op_counts:
+            op_summary = ", ".join("{}={}".format(o, n) for o, n in sorted(op_counts.items()))
+            lines.append("  [operators: {}]".format(op_summary))
+
         return "\n".join(lines)
 
     def __repr__(self) -> str:

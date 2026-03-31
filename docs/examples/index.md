@@ -10,6 +10,8 @@ All examples run on CPU in under 60 seconds. No GPU required.
 | **02** | [Multi-Frequency Fusion](02-multi-frequency.md) | Structured vs flat allocation comparison | Bandwidth-proportional allocation |
 | **03** | [CartPole Control](03-cartpole.md) | Real gym environment, BC + consistency loss | Self-consistency feedback dynamics |
 
+Examples 01-03 use `compile_schema()` (v1 layout compilation). For typed process semantics (families, carriers, operators, scheduling), use `compile_program()` instead — see the [Program Layer](../concepts/program-layer.md) concept doc and the [recipes](../recipes/robot.md) for v2 examples.
+
 ## Running
 
 ```bash

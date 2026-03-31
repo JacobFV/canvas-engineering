@@ -90,3 +90,22 @@ ops = topology.attention_ops(layout)       # [(src, dst, weight, fn), ...]
 ```
 
 The mask is compiled by iterating over connections, resolving temporal constraints and fill modes in real-time space, and setting `mask[i, j] = weight` for each (query_position, key_position) pair. Fill weights may be fractional for INTERPOLATE connections.
+
+## Operators
+
+`Connection.operator` declares the semantic intent of an edge, separate from the backend attention function (`fn`). When `compile_program()` has family information for both endpoints, it auto-sets the operator from the `DEFAULT_WIRING` table:
+
+| (src family, dst family) | Operator |
+|--------------------------|----------|
+| (observation, state) | `observe` |
+| (state, observation) | `predict` |
+| (state, state) | `integrate` |
+| (state, memory) | `write` |
+| (memory, state) | `retrieve` |
+| (state, action) | `act` |
+| (action, state) | `intervene` |
+| (state, residual) | `emit_residual` |
+| (observation, residual) | `emit_residual` |
+| (observation, observation) | `attend` |
+
+Connections without family information, or family pairs not in the table, keep the default `"attend"` operator. The operator is metadata for the program layer -- it does not change which attention function runs. `fn` controls the backend; `operator` controls the semantics.

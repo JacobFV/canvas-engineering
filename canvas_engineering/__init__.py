@@ -45,9 +45,18 @@ from canvas_engineering.attention import (
     CogVideoXAttention,
 )
 from canvas_engineering.dispatch import AttentionDispatcher
+from canvas_engineering.learning import default_learning, FAMILY_DEFAULTS
+from canvas_engineering.compiler import ProgramCompiler, CompiledProgram
+from canvas_engineering.scheduling import RegionScheduler
+from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
-    BoundField, BoundSchema, compile_schema,
+    BoundField, BoundSchema, compile_schema, compile_program,
+)
+from canvas_engineering.program import (
+    CanvasProgram, RegionProgram, ConnectionProgram,
+    ClockSpec, LearningSpec,
+    REGION_FAMILIES, CARRIERS, OPERATORS, WRITE_MODES, COMPILE_MODES,
 )
 from canvas_engineering.semantic import (
     SemanticConditioner,
@@ -55,7 +64,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -80,6 +89,17 @@ __all__ = [
     "BoundField",
     "BoundSchema",
     "compile_schema",
+    "compile_program",
+    "CanvasProgram",
+    "RegionProgram",
+    "ConnectionProgram",
+    "ClockSpec",
+    "LearningSpec",
+    "REGION_FAMILIES",
+    "CARRIERS",
+    "OPERATORS",
+    "WRITE_MODES",
+    "COMPILE_MODES",
     "SemanticConditioner",
     "auto_semantic_type",
     "compute_semantic_embeddings",
@@ -104,4 +124,11 @@ __all__ = [
     "HyenaAttention",
     "CogVideoXAttention",
     "AttentionDispatcher",
+    "ResidualSpec",
+    "ResidualAccumulator",
+    "RegionScheduler",
+    "default_learning",
+    "FAMILY_DEFAULTS",
+    "ProgramCompiler",
+    "CompiledProgram",
 ]

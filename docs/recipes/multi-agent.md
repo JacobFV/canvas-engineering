@@ -52,3 +52,26 @@ topology = CanvasTopology(connections=[
 - **Cross-robot vision** is dampened (weight=0.5) — they see each other but don't dominate
 - **Hub reads cameras via perceiver** — compresses two full camera views into the shared task bottleneck
 - **Actions read hub via gated attention** — each robot decides when to incorporate shared context
+
+## v2: with typed fields
+
+Multi-agent doesn't need special semantics — just namespaced regions and connectivity:
+
+```python
+from dataclasses import dataclass, field as dc_field
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class Robot:
+    cam: Field = Field(6, 6, family="observation")
+    action: Field = Field(1, 2, family="action", loss_weight=2.0)
+
+@dataclass
+class Team:
+    shared_task: Field = Field(1, 8, family="state", tags=("goal",), is_output=False)
+    robots: list = dc_field(default_factory=list)
+
+team = Team(robots=[Robot(), Robot()])
+bound, program = compile_program(team, T=8, H=16, W=16, d_model=512)
+# Each robot gets coarse-grained fields; shared_task connects via auto-wired operators
+```

@@ -1,8 +1,8 @@
 # Canvas Types: Detailed Design Specification
 
-**Status**: RFC / Pre-implementation
+**Status**: Implemented (v0.2.0). Extended by [v2 program layer](v2-spec.md).
 **Module**: `canvas_engineering.types`
-**Compilation target**: `CanvasLayout` + `CanvasTopology` → `CanvasSchema`
+**Compilation target**: `CanvasLayout` + `CanvasTopology` → `CanvasSchema` (v1), `CanvasProgram` (v2)
 
 ---
 

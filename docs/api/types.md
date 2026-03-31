@@ -13,3 +13,5 @@ Compositional type system for latent space. Declare types, compile to canvas sch
 ::: canvas_engineering.types.BoundSchema
 
 ::: canvas_engineering.types.compile_schema
+
+::: canvas_engineering.types.compile_program

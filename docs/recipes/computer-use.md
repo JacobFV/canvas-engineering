@@ -49,3 +49,19 @@ topology = CanvasTopology(connections=[
     Connection(src="keyboard", dst="instruction", fn="gated"),
 ])
 ```
+
+## v2: with typed fields
+
+```python
+from dataclasses import dataclass
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class ComputerAgent:
+    screen: Field = Field(24, 24, family="observation")
+    mouse: Field = Field(2, 4, family="action", loss_weight=2.0, attn="linear_attention")
+    keyboard: Field = Field(2, 4, family="action", loss_weight=2.0, attn="linear_attention")
+    instruction: Field = Field(4, 8, family="state", tags=("goal",), is_output=False, period=16)
+
+bound, program = compile_program(ComputerAgent(), T=16, H=32, W=32, d_model=768)
+```

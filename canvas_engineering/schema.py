@@ -52,6 +52,8 @@ class CanvasSchema:
                     rd["embedding_model"] = r.embedding_model
                 if r.default_attn != "cross_attention":
                     rd["default_attn"] = r.default_attn
+                if r.carrier != "deterministic":
+                    rd["carrier"] = r.carrier
                 regions[name] = rd
             else:
                 regions[name] = {"bounds": list(r)}
@@ -80,6 +82,10 @@ class CanvasSchema:
                     cd["t_dst"] = c.t_dst
                 if c.fn is not None:
                     cd["fn"] = c.fn
+                if c.operator != "attend":
+                    cd["operator"] = c.operator
+                if c.write_mode != "add":
+                    cd["write_mode"] = c.write_mode
                 conns.append(cd)
             d["topology"] = conns
 
@@ -100,7 +106,7 @@ class CanvasSchema:
             has_spec_fields = any(
                 k in rd for k in ("period", "is_output", "loss_weight",
                                   "semantic_type", "semantic_embedding",
-                                  "embedding_model", "default_attn")
+                                  "embedding_model", "default_attn", "carrier")
             )
             if has_spec_fields:
                 kwargs = {"bounds": bounds}
@@ -118,6 +124,8 @@ class CanvasSchema:
                     kwargs["embedding_model"] = rd["embedding_model"]
                 if "default_attn" in rd:
                     kwargs["default_attn"] = rd["default_attn"]
+                if "carrier" in rd:
+                    kwargs["carrier"] = rd["carrier"]
                 regions[name] = RegionSpec(**kwargs)
             else:
                 regions[name] = bounds
@@ -142,6 +150,8 @@ class CanvasSchema:
                     t_src=cd.get("t_src", None),
                     t_dst=cd.get("t_dst", None),
                     fn=cd.get("fn", None),
+                    operator=cd.get("operator", "attend"),
+                    write_mode=cd.get("write_mode", "add"),
                 ))
             topology = CanvasTopology(connections=conns)
 

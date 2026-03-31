@@ -88,3 +88,26 @@ topology = CanvasTopology(connections=[
 ])
 # O(N) instead of O(N²) — feasible for 1024+ timesteps
 ```
+
+## v2: carriers for mixed dynamics
+
+Regions can declare different dynamics carriers. A video prediction canvas might mix diffusive future frames with deterministic observed frames and filtered belief state:
+
+```python
+from dataclasses import dataclass
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class WorldModel:
+    observed: Field = Field(12, 12, family="observation", carrier="deterministic")
+    predicted: Field = Field(12, 12, family="observation", carrier="diffusive")
+    belief: Field = Field(4, 4, family="state", carrier="filter", tags=("belief",))
+    error: Field = Field(2, 2, family="residual", carrier="residual")
+    action: Field = Field(1, 4, family="action")
+
+bound, program = compile_program(WorldModel(), T=16, H=16, W=16, d_model=512)
+# observed: deterministic forward pass
+# predicted: diffusion/denoising dynamics
+# belief: predict/correct updates
+# error: tracks prediction error for scheduling
+```
