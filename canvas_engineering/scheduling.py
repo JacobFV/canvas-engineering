@@ -23,7 +23,10 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
+
+import torch
+import torch.nn as nn
 
 from canvas_engineering.program import CanvasProgram, ClockSpec
 
@@ -40,6 +43,13 @@ class RegionScheduler:
 
     Cooldown suppresses re-firing for N steps after a fire.
     max_silence forces firing after N steps of silence regardless.
+
+    Internal microsteps:
+        Regions with ``clock.domain == "internal"`` and ``clock.max_inner_steps``
+        produce additional inner steps beyond the main external step.
+        Use ``step_plan()`` to get a list of active-region sets:
+        the first set is the normal external step, subsequent sets are
+        internal microsteps for regions with internal clocks.
     """
 
     def __init__(self, program: CanvasProgram):
@@ -75,6 +85,54 @@ class RegionScheduler:
                 self._last_fired[name] = external_t
                 self._cooldown_until[name] = external_t + clock.cooldown
         return active
+
+    def step_plan(
+        self,
+        external_t: int,
+        summaries: Optional[Dict[str, Dict[str, float]]] = None,
+        boundary: Optional[str] = None,
+    ) -> List[Set[str]]:
+        """Returns a list of active-region sets, one per inner step.
+
+        The first set is the external step (always present, same as step()).
+        Subsequent sets are internal microsteps for regions with
+        ``clock.domain == "internal"`` and ``clock.max_inner_steps``.
+
+        Usage:
+            plan = scheduler.step_plan(t, summaries)
+            for active in plan:
+                canvas = dispatcher(canvas, active_regions=active)
+        """
+        # First: normal external step
+        external_active = self.step(external_t, summaries, boundary)
+        plan: List[Set[str]] = [external_active]
+
+        # Collect internal-domain regions that fired in the external step
+        # and have max_inner_steps > 0
+        internal_regions: List[str] = []
+        max_inner = 0
+        for name in external_active:
+            rp = self._program.regions.get(name)
+            if rp is None or rp.clock is None:
+                continue
+            clock = rp.clock
+            if clock.domain == "internal" and clock.max_inner_steps is not None and clock.max_inner_steps > 0:
+                internal_regions.append(name)
+                max_inner = max(max_inner, clock.max_inner_steps)
+
+        # Generate internal microsteps
+        for inner_step in range(max_inner):
+            inner_active: Set[str] = set()
+            for name in internal_regions:
+                rp = self._program.regions[name]
+                clock = rp.clock
+                if clock is not None and clock.max_inner_steps is not None:
+                    if inner_step < clock.max_inner_steps:
+                        inner_active.add(name)
+            if inner_active:
+                plan.append(inner_active)
+
+        return plan
 
     def _should_fire(
         self,
@@ -125,3 +183,86 @@ class RegionScheduler:
         n_clocked = sum(1 for rp in self._program.regions.values() if rp.clock is not None)
         return "RegionScheduler(regions={}, clocked={})".format(
             len(self._program.regions), n_clocked)
+
+
+# ── Learned scheduling ──────────────────────────────────────────────
+
+
+class LearnedScheduler(nn.Module):
+    """Learns which regions to activate based on residual summaries.
+
+    Uses a small MLP to score regions and selects top-k via
+    straight-through Gumbel top-k for differentiable discrete
+    selection.
+
+    Args:
+        n_regions: Number of regions to score.
+        summary_dim: Dimension of the flattened summary input.
+        max_active: Maximum number of regions to activate per step.
+        temperature: Gumbel softmax temperature. Lower = more discrete.
+
+    Usage:
+        scheduler = LearnedScheduler(n_regions=5, summary_dim=10, max_active=3)
+        summaries_flat = torch.randn(1, 10)  # flattened residual summaries
+        active_indices, log_probs = scheduler(summaries_flat)
+    """
+
+    def __init__(
+        self,
+        n_regions: int,
+        summary_dim: int,
+        max_active: int,
+        temperature: float = 1.0,
+    ):
+        super().__init__()
+        self.n_regions = n_regions
+        self.max_active = min(max_active, n_regions)
+        self.temperature = temperature
+        self.scorer = nn.Sequential(
+            nn.Linear(summary_dim, n_regions * 2),
+            nn.GELU(),
+            nn.Linear(n_regions * 2, n_regions),
+        )
+
+    def forward(self, summaries: torch.Tensor) -> Tuple[Set[int], torch.Tensor]:
+        """Score regions, select top-k.
+
+        Args:
+            summaries: (summary_dim,) or (B, summary_dim) flattened residual
+                summaries. If batched, uses the first item for selection
+                (scheduling is per-step, not per-sample).
+
+        Returns:
+            Tuple of:
+            - active_indices: Set of int region indices to activate.
+            - log_probs: (n_regions,) tensor of log-probabilities for each
+              region being selected (for REINFORCE-style training).
+        """
+        if summaries.dim() == 1:
+            summaries = summaries.unsqueeze(0)
+
+        # Score regions
+        scores = self.scorer(summaries[0:1]).squeeze(0)  # (n_regions,)
+
+        # Straight-through Gumbel top-k
+        if self.training:
+            gumbel_noise = -torch.log(-torch.log(
+                torch.rand_like(scores).clamp(min=1e-8)
+            ))
+            perturbed = (scores + gumbel_noise) / max(self.temperature, 1e-8)
+        else:
+            perturbed = scores
+
+        # Select top-k
+        k = min(self.max_active, self.n_regions)
+        topk_vals, topk_idx = torch.topk(perturbed, k)
+        active_indices = set(topk_idx.tolist())
+
+        # Compute log-probabilities for all regions
+        log_probs = torch.log_softmax(scores, dim=0)
+
+        return active_indices, log_probs
+
+    def __repr__(self) -> str:
+        return "LearnedScheduler(n_regions={}, max_active={}, temperature={})".format(
+            self.n_regions, self.max_active, self.temperature)

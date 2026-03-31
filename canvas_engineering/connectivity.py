@@ -121,6 +121,7 @@ class Connection:
     write_mode: str = "add"
     temporal_fill: TemporalFill = TemporalFill.HOLD
     interpolation_order: int = 1
+    mask: Optional["MaskSpec"] = None
 
 
 # ── Temporal fill helpers ────────────────────────────────────────────

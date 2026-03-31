@@ -353,6 +353,54 @@ class PeriodEmbedding(nn.Module):
         return self.embedding.weight[idx]
 
 
+class FamilyCarrierEmbedding(nn.Module):
+    """Learned embeddings for region family and carrier, summed into positions.
+
+    Each region on the canvas has a family (observation, state, memory,
+    residual, action) and a carrier (deterministic, diffusive, filter,
+    memory, residual).  This module produces a (d_model,) vector for
+    any family+carrier pair by summing two learned embeddings.
+
+    Unknown families/carriers map to a dedicated "unknown" slot (the last
+    row of each embedding table), so the module is safe against custom
+    string values.
+
+    Args:
+        d_model: Embedding dimension.
+    """
+
+    FAMILIES = ["observation", "state", "memory", "residual", "action"]
+    CARRIERS = ["deterministic", "diffusive", "filter", "memory", "residual"]
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.d_model = d_model
+        self.family_embedding = nn.Embedding(len(self.FAMILIES) + 1, d_model)  # +1 for unknown
+        self.carrier_embedding = nn.Embedding(len(self.CARRIERS) + 1, d_model)
+        nn.init.normal_(self.family_embedding.weight, std=0.02)
+        nn.init.normal_(self.carrier_embedding.weight, std=0.02)
+        self._family_to_idx = {f: i for i, f in enumerate(self.FAMILIES)}
+        self._carrier_to_idx = {c: i for i, c in enumerate(self.CARRIERS)}
+
+    def family_idx(self, family: str) -> int:
+        """Map a family string to an embedding index."""
+        return self._family_to_idx.get(family, len(self.FAMILIES))
+
+    def carrier_idx(self, carrier: str) -> int:
+        """Map a carrier string to an embedding index."""
+        return self._carrier_to_idx.get(carrier, len(self.CARRIERS))
+
+    def forward(self, family: str, carrier: str) -> torch.Tensor:
+        """Get (d_model,) embedding for a family+carrier pair."""
+        f_emb = self.family_embedding.weight[self.family_idx(family)]
+        c_emb = self.carrier_embedding.weight[self.carrier_idx(carrier)]
+        return f_emb + c_emb
+
+    def __repr__(self) -> str:
+        return "FamilyCarrierEmbedding(d_model={}, families={}, carriers={})".format(
+            self.d_model, len(self.FAMILIES), len(self.CARRIERS))
+
+
 class SpatiotemporalCanvas(nn.Module):
     """Manages the unified canvas tensor with positional + modality + period embeddings.
 
@@ -389,10 +437,11 @@ class SpatiotemporalCanvas(nn.Module):
         """Sanitize region name for use as a PyTorch ParameterDict key."""
         return name.replace(".", "__").replace("[", "_").replace("]", "_")
 
-    def __init__(self, layout: CanvasLayout, semantic_conditioner=None):
+    def __init__(self, layout: CanvasLayout, semantic_conditioner=None, program=None):
         super().__init__()
         self.layout = layout
         self.semantic_conditioner = semantic_conditioner
+        self._program = program
         self.pos_enc = SinusoidalPositionalEncoding3D(
             layout.d_model, max_T=layout.T, max_H=layout.H, max_W=layout.W
         )
@@ -411,11 +460,18 @@ class SpatiotemporalCanvas(nn.Module):
             # Semantic conditioner replaces learned modality embeddings
             self.modality_embeddings = None
 
+        # Optional family+carrier embedding when a CanvasProgram is provided
+        if program is not None:
+            self.family_carrier_embedding = FamilyCarrierEmbedding(layout.d_model)
+        else:
+            self.family_carrier_embedding = None
+
     def create_empty(self, batch_size: int) -> torch.Tensor:
         """(B, N, d_model) canvas filled with empty tokens + positional + period encoding.
 
         Each position gets: empty_token + 3D_PE + period_embedding.
         If a semantic conditioner is present, also adds semantic conditioning.
+        If a program was provided at init, also adds family+carrier embeddings.
         """
         L = self.layout
         canvas = self.empty_token.unsqueeze(0).unsqueeze(0).expand(batch_size, L.num_positions, L.d_model).clone()
@@ -431,13 +487,24 @@ class SpatiotemporalCanvas(nn.Module):
                 idx = torch.tensor(indices, device=canvas.device, dtype=torch.long)
                 canvas[:, idx] = canvas[:, idx] + period_emb.to(canvas.device)
 
+        # Sum family+carrier embedding when a program is available
+        if self.family_carrier_embedding is not None and self._program is not None:
+            for name in L.regions:
+                rp = self._program.regions.get(name)
+                if rp is not None:
+                    fc_emb = self.family_carrier_embedding(rp.family, rp.carrier)
+                    indices = L.region_indices(name)
+                    if indices:
+                        idx = torch.tensor(indices, device=canvas.device, dtype=torch.long)
+                        canvas[:, idx] = canvas[:, idx] + fc_emb.to(canvas.device)
+
         if self.semantic_conditioner is not None:
             canvas = self.semantic_conditioner.condition_canvas(canvas, L)
 
         return canvas
 
     def place(self, canvas: torch.Tensor, embeddings: torch.Tensor, region_name: str) -> torch.Tensor:
-        """Write embeddings into a named region, adding modality + period embeddings."""
+        """Write embeddings into a named region, adding modality + period + family/carrier embeddings."""
         indices = self.layout.region_indices(region_name)
         n = len(indices)
         if embeddings.shape[1] > n:
@@ -463,8 +530,15 @@ class SpatiotemporalCanvas(nn.Module):
         spec = self.layout.region_spec(region_name)
         period_emb = self.period_embedding(spec.period).to(canvas.device)
 
+        # Add family+carrier embedding when a program is available
+        fc_emb = 0
+        if self.family_carrier_embedding is not None and self._program is not None:
+            rp = self._program.regions.get(region_name)
+            if rp is not None:
+                fc_emb = self.family_carrier_embedding(rp.family, rp.carrier).to(canvas.device)
+
         canvas = canvas.clone()
-        canvas[:, idx] = embeddings + region_emb + period_emb
+        canvas[:, idx] = embeddings + region_emb + period_emb + fc_emb
         return canvas
 
     def extract(self, canvas: torch.Tensor, region_name: str) -> torch.Tensor:

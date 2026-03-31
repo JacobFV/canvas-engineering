@@ -77,6 +77,7 @@ class ClockSpec:
     event_threshold: float = 0.0
     cooldown: int = 0
     max_silence: Optional[int] = None
+    max_inner_steps: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,43 @@ class LearningSpec:
 
 
 @dataclass(frozen=True)
+class ConstraintSpec:
+    """Structural constraints on a region's dynamics.
+
+    Constraints are declarative assertions that the region's learned
+    dynamics should respect.  They are checked by ``validate_constraints()``
+    and can be used by the compiler for optimization.
+
+    Args:
+        equivariance: Symmetry the region must respect.
+            "translation" = shift-equivariant, "rotation" = rotation-equivariant,
+            "permutation" = permutation-equivariant. None = unconstrained.
+        conservation: Conservation law.
+            "capacity" = total activation is conserved (competition),
+            "energy" = total energy is conserved (Hamiltonian).
+            None = unconstrained.
+        causal_direction: Causal constraint on outgoing connections.
+            "acyclic" = no cycles in the connection graph rooted here,
+            "forward_only" = only connects to regions with later temporal
+            bounds. None = unconstrained.
+        monotonicity: Monotonicity constraint on the region's state.
+            "non_decreasing" = state values can only increase over time,
+            "non_increasing" = state values can only decrease over time.
+            None = unconstrained.
+    """
+    equivariance: Optional[str] = None
+    conservation: Optional[str] = None
+    causal_direction: Optional[str] = None
+    monotonicity: Optional[str] = None
+
+
+_VALID_EQUIVARIANCES = {"translation", "rotation", "permutation"}
+_VALID_CONSERVATIONS = {"capacity", "energy"}
+_VALID_CAUSAL_DIRECTIONS = {"acyclic", "forward_only"}
+_VALID_MONOTONICITIES = {"non_decreasing", "non_increasing"}
+
+
+@dataclass(frozen=True)
 class RegionProgram:
     """Process semantics for a canvas region.
 
@@ -118,6 +156,8 @@ class RegionProgram:
         learning: Training recipe. None = use family default.
         compile_mode: Deploy behavior. "runtime" = keep live, "freeze" = no
             more learning, "constant" = materialize, "export" = save & remove.
+        constraints: Structural constraints on dynamics. None = unconstrained.
+        identity: Identity/slot persistence spec. None = no identity tracking.
     """
     family: str = "state"
     tags: Tuple[str, ...] = ()
@@ -125,6 +165,8 @@ class RegionProgram:
     clock: Optional[ClockSpec] = None
     learning: Optional[LearningSpec] = None
     compile_mode: str = "runtime"
+    constraints: Optional[ConstraintSpec] = None
+    identity: Optional["IdentitySpec"] = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +207,8 @@ def _clock_to_dict(clock: ClockSpec) -> dict:
         d["cooldown"] = clock.cooldown
     if clock.max_silence is not None:
         d["max_silence"] = clock.max_silence
+    if clock.max_inner_steps is not None:
+        d["max_inner_steps"] = clock.max_inner_steps
     return d
 
 
@@ -178,6 +222,7 @@ def _clock_from_dict(d: dict) -> ClockSpec:
         event_threshold=d.get("event_threshold", 0.0),
         cooldown=d.get("cooldown", 0),
         max_silence=d.get("max_silence"),
+        max_inner_steps=d.get("max_inner_steps"),
     )
 
 
@@ -202,6 +247,55 @@ def _learning_from_dict(d: dict) -> LearningSpec:
     )
 
 
+def _constraint_to_dict(cs: ConstraintSpec) -> dict:
+    """Serialize ConstraintSpec, omitting None values."""
+    d = {}
+    if cs.equivariance is not None:
+        d["equivariance"] = cs.equivariance
+    if cs.conservation is not None:
+        d["conservation"] = cs.conservation
+    if cs.causal_direction is not None:
+        d["causal_direction"] = cs.causal_direction
+    if cs.monotonicity is not None:
+        d["monotonicity"] = cs.monotonicity
+    return d
+
+
+def _constraint_from_dict(d: dict) -> ConstraintSpec:
+    """Deserialize ConstraintSpec with defaults for missing keys."""
+    return ConstraintSpec(
+        equivariance=d.get("equivariance"),
+        conservation=d.get("conservation"),
+        causal_direction=d.get("causal_direction"),
+        monotonicity=d.get("monotonicity"),
+    )
+
+
+def _identity_to_dict(spec: "IdentitySpec") -> dict:
+    """Serialize IdentitySpec, omitting default values."""
+    d: Dict = {}
+    if spec.mode != "persistent":
+        d["mode"] = spec.mode
+    if spec.slot_capacity != 64:
+        d["slot_capacity"] = spec.slot_capacity
+    if spec.binding_fn != "cross_attention":
+        d["binding_fn"] = spec.binding_fn
+    if spec.birth_death:
+        d["birth_death"] = spec.birth_death
+    return d
+
+
+def _identity_from_dict(d: dict) -> "IdentitySpec":
+    # Import here to avoid circular imports at module level
+    from canvas_engineering.identity import IdentitySpec
+    return IdentitySpec(
+        mode=d.get("mode", "persistent"),
+        slot_capacity=d.get("slot_capacity", 64),
+        binding_fn=d.get("binding_fn", "cross_attention"),
+        birth_death=d.get("birth_death", False),
+    )
+
+
 def _region_program_to_dict(rp: RegionProgram) -> dict:
     """Serialize RegionProgram, omitting default values."""
     d = {}
@@ -217,6 +311,10 @@ def _region_program_to_dict(rp: RegionProgram) -> dict:
         d["learning"] = _learning_to_dict(rp.learning)
     if rp.compile_mode != "runtime":
         d["compile_mode"] = rp.compile_mode
+    if rp.constraints is not None:
+        d["constraints"] = _constraint_to_dict(rp.constraints)
+    if rp.identity is not None:
+        d["identity"] = _identity_to_dict(rp.identity)
     return d
 
 
@@ -224,6 +322,8 @@ def _region_program_from_dict(d: dict) -> RegionProgram:
     """Deserialize RegionProgram with defaults for missing keys."""
     clock = _clock_from_dict(d["clock"]) if "clock" in d else None
     learning = _learning_from_dict(d["learning"]) if "learning" in d else None
+    constraints = _constraint_from_dict(d["constraints"]) if "constraints" in d else None
+    identity = _identity_from_dict(d["identity"]) if "identity" in d else None
     return RegionProgram(
         family=d.get("family", "state"),
         tags=tuple(d.get("tags", ())),
@@ -231,6 +331,8 @@ def _region_program_from_dict(d: dict) -> RegionProgram:
         clock=clock,
         learning=learning,
         compile_mode=d.get("compile_mode", "runtime"),
+        constraints=constraints,
+        identity=identity,
     )
 
 
@@ -384,3 +486,98 @@ class CanvasProgram:
     def __repr__(self) -> str:
         return "CanvasProgram(regions={}, connections={}, version={!r})".format(
             len(self.regions), len(self.connections), self.version)
+
+
+# ── Constraint validation ───────────────────────────────────────────
+
+
+def validate_constraints(program: CanvasProgram) -> List[str]:
+    """Check structural constraints declared on regions and return violations.
+
+    Validates:
+    - ConstraintSpec field values are from known enums
+    - causal_direction="acyclic" — no cycles in the connection sub-graph
+      rooted at constrained regions
+    - causal_direction="forward_only" — constrained regions only connect
+      to regions whose temporal bounds start at the same or later time
+
+    Returns:
+        List of human-readable violation strings. Empty list = all good.
+    """
+    violations: List[str] = []
+
+    for name, rp in program.regions.items():
+        if rp.constraints is None:
+            continue
+        cs = rp.constraints
+
+        # Validate enum values
+        if cs.equivariance is not None and cs.equivariance not in _VALID_EQUIVARIANCES:
+            violations.append(
+                "{}: unknown equivariance {!r} (valid: {})".format(
+                    name, cs.equivariance, sorted(_VALID_EQUIVARIANCES)))
+        if cs.conservation is not None and cs.conservation not in _VALID_CONSERVATIONS:
+            violations.append(
+                "{}: unknown conservation {!r} (valid: {})".format(
+                    name, cs.conservation, sorted(_VALID_CONSERVATIONS)))
+        if cs.causal_direction is not None and cs.causal_direction not in _VALID_CAUSAL_DIRECTIONS:
+            violations.append(
+                "{}: unknown causal_direction {!r} (valid: {})".format(
+                    name, cs.causal_direction, sorted(_VALID_CAUSAL_DIRECTIONS)))
+        if cs.monotonicity is not None and cs.monotonicity not in _VALID_MONOTONICITIES:
+            violations.append(
+                "{}: unknown monotonicity {!r} (valid: {})".format(
+                    name, cs.monotonicity, sorted(_VALID_MONOTONICITIES)))
+
+    # Gather topology for causal checks
+    topology = program.schema.topology
+    if topology is None:
+        return violations
+
+    # Build adjacency for cycle detection
+    adj: Dict[str, Set[str]] = {}
+    for conn in topology.connections:
+        adj.setdefault(conn.src, set()).add(conn.dst)
+
+    # Check causal_direction constraints
+    layout = program.schema.layout
+    for name, rp in program.regions.items():
+        if rp.constraints is None or rp.constraints.causal_direction is None:
+            continue
+
+        if rp.constraints.causal_direction == "acyclic":
+            # DFS from this region — should not reach itself
+            visited: Set[str] = set()
+            stack = list(adj.get(name, set()))
+            while stack:
+                node = stack.pop()
+                if node == name:
+                    violations.append(
+                        "{}: causal_direction='acyclic' violated — cycle detected".format(name))
+                    break
+                if node not in visited:
+                    visited.add(node)
+                    stack.extend(adj.get(node, set()))
+
+        elif rp.constraints.causal_direction == "forward_only":
+            # All outgoing connections must go to regions with t0 >= this region's t0
+            try:
+                src_spec = layout.region_spec(name)
+                src_t0 = src_spec.bounds[0]
+            except KeyError:
+                continue
+            for dst_name in adj.get(name, set()):
+                if dst_name == name:
+                    continue  # self-connections are fine
+                try:
+                    dst_spec = layout.region_spec(dst_name)
+                    dst_t0 = dst_spec.bounds[0]
+                except KeyError:
+                    continue
+                if dst_t0 < src_t0:
+                    violations.append(
+                        "{}: causal_direction='forward_only' violated — "
+                        "connects to {} (t0={} < {})".format(
+                            name, dst_name, dst_t0, src_t0))
+
+    return violations

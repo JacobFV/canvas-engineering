@@ -1291,5 +1291,1129 @@ class TestProgramCompiler:
         assert "memory" not in compiled.schema.layout.regions
 
 
+# ── Phase 6: FamilyCarrierEmbedding + ProgramConditioner ────────────
+
+from canvas_engineering.canvas import FamilyCarrierEmbedding
+
+
+class TestFamilyCarrierEmbedding:
+    def test_init(self):
+        emb = FamilyCarrierEmbedding(d_model=32)
+        assert emb.d_model == 32
+        assert emb.family_embedding.num_embeddings == 6  # 5 families + unknown
+        assert emb.carrier_embedding.num_embeddings == 6  # 5 carriers + unknown
+
+    def test_known_family_idx(self):
+        emb = FamilyCarrierEmbedding(d_model=16)
+        assert emb.family_idx("observation") == 0
+        assert emb.family_idx("state") == 1
+        assert emb.family_idx("action") == 4
+
+    def test_unknown_family_idx(self):
+        emb = FamilyCarrierEmbedding(d_model=16)
+        assert emb.family_idx("custom_family") == len(emb.FAMILIES)
+
+    def test_known_carrier_idx(self):
+        emb = FamilyCarrierEmbedding(d_model=16)
+        assert emb.carrier_idx("deterministic") == 0
+        assert emb.carrier_idx("diffusive") == 1
+
+    def test_unknown_carrier_idx(self):
+        emb = FamilyCarrierEmbedding(d_model=16)
+        assert emb.carrier_idx("custom_carrier") == len(emb.CARRIERS)
+
+    def test_forward_shape(self):
+        emb = FamilyCarrierEmbedding(d_model=32)
+        out = emb("observation", "deterministic")
+        assert out.shape == (32,)
+
+    def test_different_pairs_differ(self):
+        emb = FamilyCarrierEmbedding(d_model=32)
+        a = emb("observation", "deterministic")
+        b = emb("state", "diffusive")
+        assert not torch.allclose(a, b)
+
+    def test_repr(self):
+        emb = FamilyCarrierEmbedding(d_model=16)
+        r = repr(emb)
+        assert "FamilyCarrierEmbedding" in r
+
+
+class TestSpatiotemporalCanvasWithProgram:
+    def test_backward_compat_no_program(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+        })
+        canvas_mod = SpatiotemporalCanvas(layout)
+        c = canvas_mod.create_empty(batch_size=1)
+        assert c.shape == (1, layout.num_positions, 16)
+        assert canvas_mod.family_carrier_embedding is None
+
+    def test_with_program(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "obs": RegionSpec(bounds=(0, 2, 0, 1, 0, 1)),
+            "act": RegionSpec(bounds=(0, 2, 1, 2, 0, 1)),
+        })
+        schema = CanvasSchema(layout=layout)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "act": RegionProgram(family="action"),
+            },
+        )
+        canvas_mod = SpatiotemporalCanvas(layout, program=prog)
+        assert canvas_mod.family_carrier_embedding is not None
+        c = canvas_mod.create_empty(batch_size=2)
+        assert c.shape == (2, layout.num_positions, 16)
+
+    def test_place_with_program(self):
+        layout = CanvasLayout(T=1, H=2, W=1, d_model=8, regions={
+            "obs": RegionSpec(bounds=(0, 1, 0, 1, 0, 1)),
+        })
+        schema = CanvasSchema(layout=layout)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={"obs": RegionProgram(family="observation")},
+        )
+        canvas_mod = SpatiotemporalCanvas(layout, program=prog)
+        c = canvas_mod.create_empty(batch_size=1)
+        embs = torch.randn(1, 1, 8)
+        c2 = canvas_mod.place(c, embs, "obs")
+        assert c2.shape == c.shape
+        # Placed values should differ from empty
+        idx = layout.region_indices("obs")
+        assert not torch.equal(c2[0, idx[0]], c[0, idx[0]])
+
+
+from canvas_engineering import SpatiotemporalCanvas, transfer_distance
+from canvas_engineering.semantic import program_distance
+
+
+class TestProgramDistance:
+    def _make_specs(self):
+        emb_a = tuple([0.5] * 16)
+        emb_b = tuple([0.3] * 16)
+        a = RegionSpec(bounds=(0, 1, 0, 1, 0, 1), semantic_embedding=emb_a)
+        b = RegionSpec(bounds=(0, 1, 0, 1, 0, 1), semantic_embedding=emb_b)
+        return a, b
+
+    def test_same_family_same_carrier(self):
+        a_spec, b_spec = self._make_specs()
+        a_prog = RegionProgram(family="observation", carrier="deterministic")
+        b_prog = RegionProgram(family="observation", carrier="deterministic")
+        d = program_distance(a_spec, a_prog, b_spec, b_prog)
+        base = transfer_distance(a_spec, b_spec)
+        assert abs(d - base) < 1e-5
+
+    def test_different_family_penalty(self):
+        a_spec, b_spec = self._make_specs()
+        a_prog = RegionProgram(family="observation")
+        b_prog = RegionProgram(family="action")
+        d = program_distance(a_spec, a_prog, b_spec, b_prog)
+        base = transfer_distance(a_spec, b_spec)
+        assert d > base
+        assert abs(d - base - 0.3) < 1e-5
+
+    def test_different_carrier_penalty(self):
+        a_spec, b_spec = self._make_specs()
+        a_prog = RegionProgram(family="observation", carrier="deterministic")
+        b_prog = RegionProgram(family="observation", carrier="diffusive")
+        d = program_distance(a_spec, a_prog, b_spec, b_prog)
+        base = transfer_distance(a_spec, b_spec)
+        assert abs(d - base - 0.2) < 1e-5
+
+    def test_both_penalties(self):
+        a_spec, b_spec = self._make_specs()
+        a_prog = RegionProgram(family="observation", carrier="deterministic")
+        b_prog = RegionProgram(family="action", carrier="diffusive")
+        d = program_distance(a_spec, a_prog, b_spec, b_prog)
+        base = transfer_distance(a_spec, b_spec)
+        assert abs(d - base - 0.5) < 1e-5
+
+
+# ── Phase 6: Internal microsteps ────────────────────────────────────
+
+
+class TestMicrosteps:
+    def test_clockspec_max_inner_steps_default(self):
+        c = ClockSpec()
+        assert c.max_inner_steps is None
+
+    def test_clockspec_max_inner_steps(self):
+        c = ClockSpec(max_inner_steps=3)
+        assert c.max_inner_steps == 3
+
+    def test_clockspec_max_inner_steps_frozen(self):
+        c = ClockSpec(max_inner_steps=3)
+        with pytest.raises(AttributeError):
+            c.max_inner_steps = 5
+
+    def test_step_plan_no_internal(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "state": RegionProgram(family="state"),
+            },
+        )
+        sched = RegionScheduler(prog)
+        plan = sched.step_plan(0)
+        assert len(plan) == 1  # just the external step
+        assert "obs" in plan[0]
+        assert "state" in plan[0]
+
+    def test_step_plan_with_internal(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "state": RegionProgram(
+                    family="state",
+                    clock=ClockSpec(domain="internal", max_inner_steps=3),
+                ),
+            },
+        )
+        sched = RegionScheduler(prog)
+        plan = sched.step_plan(0)
+        # 1 external + 3 internal
+        assert len(plan) == 4
+        assert "obs" in plan[0]
+        assert "state" in plan[0]
+        # Internal steps only have "state"
+        for step in plan[1:]:
+            assert "state" in step
+            assert "obs" not in step
+
+    def test_step_plan_mixed_inner_steps(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "state": RegionProgram(
+                    family="state",
+                    clock=ClockSpec(domain="internal", max_inner_steps=2),
+                ),
+                "act": RegionProgram(
+                    family="action",
+                    clock=ClockSpec(domain="internal", max_inner_steps=4),
+                ),
+            },
+        )
+        sched = RegionScheduler(prog)
+        plan = sched.step_plan(0)
+        # 1 external + max(2, 4) = 4 internal
+        assert len(plan) == 5
+        # First 2 inner steps have both state and act
+        assert "state" in plan[1]
+        assert "act" in plan[1]
+        assert "state" in plan[2]
+        assert "act" in plan[2]
+        # Steps 3 and 4 only have act
+        assert "state" not in plan[3]
+        assert "act" in plan[3]
+        assert "act" in plan[4]
+
+    def test_step_plan_backward_compat(self):
+        """step_plan first set matches step()"""
+        prog = _make_program_with_clocks()
+        sched = RegionScheduler(prog)
+        active = sched.step(0)
+        sched.reset()
+        plan = sched.step_plan(0)
+        assert plan[0] == active
+
+    def test_clockspec_max_inner_steps_roundtrip(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    clock=ClockSpec(max_inner_steps=5),
+                ),
+            },
+        )
+        d = prog.to_dict()
+        loaded = CanvasProgram.from_dict(d)
+        assert loaded.regions["obs"].clock.max_inner_steps == 5
+
+
+# ── Phase 6: Identity / Slot persistence ────────────────────────────
+
+from canvas_engineering.identity import IdentitySpec, SlotBindingModule
+
+
+class TestIdentitySpec:
+    def test_defaults(self):
+        spec = IdentitySpec()
+        assert spec.mode == "persistent"
+        assert spec.slot_capacity == 64
+        assert spec.binding_fn == "cross_attention"
+        assert spec.birth_death is False
+
+    def test_custom(self):
+        spec = IdentitySpec(mode="tracklet", slot_capacity=32, birth_death=True)
+        assert spec.mode == "tracklet"
+        assert spec.slot_capacity == 32
+        assert spec.birth_death is True
+
+    def test_frozen(self):
+        spec = IdentitySpec()
+        with pytest.raises(AttributeError):
+            spec.mode = "ephemeral"
+
+    def test_region_program_with_identity(self):
+        rp = RegionProgram(
+            family="observation",
+            identity=IdentitySpec(mode="persistent", slot_capacity=16),
+        )
+        assert rp.identity is not None
+        assert rp.identity.slot_capacity == 16
+
+    def test_identity_roundtrip(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    family="observation",
+                    identity=IdentitySpec(mode="tracklet", slot_capacity=32, birth_death=True),
+                ),
+            },
+        )
+        d = prog.to_dict()
+        loaded = CanvasProgram.from_dict(d)
+        assert loaded.regions["obs"].identity is not None
+        assert loaded.regions["obs"].identity.mode == "tracklet"
+        assert loaded.regions["obs"].identity.slot_capacity == 32
+        assert loaded.regions["obs"].identity.birth_death is True
+
+
+class TestSlotBindingModule:
+    def test_forward_shape(self):
+        binder = SlotBindingModule(d_model=16, n_slots=8, n_heads=2)
+        obs = torch.randn(2, 5, 16)
+        out = binder(obs)
+        assert out.shape == (2, 8, 16)
+
+    def test_with_birth_death(self):
+        binder = SlotBindingModule(d_model=16, n_slots=8, n_heads=2, birth_death=True)
+        obs = torch.randn(2, 5, 16)
+        out = binder(obs)
+        assert out.shape == (2, 8, 16)
+        # Check alive_mask
+        mask = binder.alive_mask(obs)
+        assert mask.shape == (2, 8)
+        assert mask.dtype == torch.bool
+
+    def test_without_birth_death_all_alive(self):
+        binder = SlotBindingModule(d_model=16, n_slots=4, n_heads=2, birth_death=False)
+        obs = torch.randn(1, 3, 16)
+        mask = binder.alive_mask(obs)
+        assert mask.all()
+
+    def test_repr(self):
+        binder = SlotBindingModule(d_model=16, n_slots=4)
+        r = repr(binder)
+        assert "SlotBindingModule" in r
+        assert "n_slots=4" in r
+
+    def test_gradient_flows(self):
+        binder = SlotBindingModule(d_model=16, n_slots=4, n_heads=2, birth_death=True)
+        obs = torch.randn(1, 3, 16, requires_grad=True)
+        out = binder(obs)
+        loss = out.sum()
+        loss.backward()
+        assert obs.grad is not None
+
+
+# ── Phase 6: MaskSpec ───────────────────────────────────────────────
+
+from canvas_engineering.masks import MaskSpec, Rect, rect_cover, mask_to_index_pairs
+
+
+class TestMaskSpec:
+    def test_defaults(self):
+        ms = MaskSpec()
+        assert ms.kind == "full"
+        assert ms.tile_h == 1
+        assert ms.tile_w == 1
+
+    def test_custom(self):
+        ms = MaskSpec(kind="tile", tile_h=4, tile_w=4)
+        assert ms.kind == "tile"
+        assert ms.tile_h == 4
+
+    def test_frozen(self):
+        ms = MaskSpec()
+        with pytest.raises(AttributeError):
+            ms.kind = "tile"
+
+
+class TestRect:
+    def test_volume(self):
+        r = Rect(0, 2, 0, 3, 0, 4)
+        assert r.volume == 24  # 2*3*4
+
+    def test_zero_volume(self):
+        r = Rect(0, 0, 0, 0, 0, 0)
+        assert r.volume == 0
+
+
+class TestRectCover:
+    def test_empty_mask(self):
+        mask = torch.zeros(2, 3, 4, dtype=torch.bool)
+        rects = rect_cover(mask)
+        assert len(rects) == 0
+
+    def test_full_mask(self):
+        mask = torch.ones(2, 3, 4, dtype=torch.bool)
+        rects = rect_cover(mask)
+        # Should cover everything (ideally in one rect)
+        total_covered = sum(r.volume for r in rects)
+        assert total_covered == 24
+
+    def test_single_point(self):
+        mask = torch.zeros(2, 3, 4, dtype=torch.bool)
+        mask[1, 2, 3] = True
+        rects = rect_cover(mask)
+        assert len(rects) == 1
+        assert rects[0].volume == 1
+
+    def test_rectangular_block(self):
+        mask = torch.zeros(4, 4, 4, dtype=torch.bool)
+        mask[0:2, 0:2, 0:2] = True
+        rects = rect_cover(mask)
+        total = sum(r.volume for r in rects)
+        assert total == 8
+
+    def test_complete_coverage(self):
+        """All True positions are covered by the returned rects."""
+        mask = torch.zeros(3, 3, 3, dtype=torch.bool)
+        mask[0, 0, 0] = True
+        mask[2, 2, 2] = True
+        mask[1, 1, 0] = True
+        rects = rect_cover(mask)
+        # Verify coverage
+        covered = torch.zeros_like(mask)
+        for r in rects:
+            covered[r.t0:r.t1, r.h0:r.h1, r.w0:r.w1] = True
+        assert (covered & mask).sum() == mask.sum()
+
+
+class TestMaskToIndexPairs:
+    def test_full(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=8, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+            "b": (0, 2, 1, 2, 0, 1),
+        })
+        ms = MaskSpec(kind="full")
+        pairs = mask_to_index_pairs(ms, layout, "a", "b")
+        assert len(pairs) == 1
+        src_idx, dst_idx = pairs[0]
+        assert len(src_idx) == 2
+        assert len(dst_idx) == 2
+
+    def test_tile(self):
+        layout = CanvasLayout(T=1, H=4, W=4, d_model=8, regions={
+            "a": (0, 1, 0, 4, 0, 4),
+            "b": (0, 1, 0, 4, 0, 4),
+        })
+        ms = MaskSpec(kind="tile", tile_h=2, tile_w=2)
+        pairs = mask_to_index_pairs(ms, layout, "a", "b")
+        assert len(pairs) == 4  # 4x4 grid with 2x2 tiles = 4 tiles
+
+    def test_sparse_falls_back_to_full(self):
+        layout = CanvasLayout(T=1, H=2, W=2, d_model=8, regions={
+            "a": (0, 1, 0, 2, 0, 2),
+        })
+        ms = MaskSpec(kind="sparse")
+        pairs = mask_to_index_pairs(ms, layout, "a", "a")
+        assert len(pairs) == 1
+
+    def test_connection_with_mask(self):
+        """Connection with mask field works."""
+        ms = MaskSpec(kind="tile", tile_h=2, tile_w=2)
+        c = Connection(src="a", dst="b", mask=ms)
+        assert c.mask is not None
+        assert c.mask.kind == "tile"
+
+    def test_connection_no_mask_default(self):
+        c = Connection(src="a", dst="b")
+        assert c.mask is None
+
+
+# ── Phase 6: CortexSpec ─────────────────────────────────────────────
+
+from canvas_engineering.cortex import CortexSpec, CortexRegistry
+
+
+class TestCortexSpec:
+    def test_defaults(self):
+        cs = CortexSpec(name="visual")
+        assert cs.name == "visual"
+        assert cs.tile == (4, 4)
+        assert cs.local_backend == "local_attention"
+        assert cs.shared_cache is True
+
+    def test_custom(self):
+        cs = CortexSpec(
+            name="motor", bounds=(0, 4, 0, 8, 0, 8),
+            tile=(2, 2), local_backend="linear_attention", shared_cache=False,
+        )
+        assert cs.name == "motor"
+        assert cs.tile == (2, 2)
+        assert cs.shared_cache is False
+
+    def test_frozen(self):
+        cs = CortexSpec(name="test")
+        with pytest.raises(AttributeError):
+            cs.name = "other"
+
+
+class TestCortexRegistry:
+    def test_register_and_assign(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        assert reg.cortex_for("camera").name == "visual"
+
+    def test_register_duplicate_raises(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        with pytest.raises(ValueError):
+            reg.register(CortexSpec(name="visual"))
+
+    def test_assign_unknown_cortex_raises(self):
+        reg = CortexRegistry()
+        with pytest.raises(KeyError):
+            reg.assign("camera", "nonexistent")
+
+    def test_reassign_different_cortex_raises(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.register(CortexSpec(name="motor"))
+        reg.assign("camera", "visual")
+        with pytest.raises(ValueError):
+            reg.assign("camera", "motor")
+
+    def test_reassign_same_cortex_ok(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        reg.assign("camera", "visual")  # no error
+        assert reg.cortex_for("camera").name == "visual"
+
+    def test_regions_in(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        reg.assign("depth", "visual")
+        regions = reg.regions_in("visual")
+        assert regions == ["camera", "depth"]  # sorted
+
+    def test_same_cortex(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        reg.assign("depth", "visual")
+        assert reg.same_cortex("camera", "depth")
+
+    def test_different_cortex(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.register(CortexSpec(name="motor"))
+        reg.assign("camera", "visual")
+        reg.assign("joints", "motor")
+        assert not reg.same_cortex("camera", "joints")
+
+    def test_no_cortex(self):
+        reg = CortexRegistry()
+        assert reg.cortex_for("camera") is None
+        assert not reg.same_cortex("a", "b")
+
+    def test_unregister(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        reg.unregister("visual")
+        assert reg.cortex_for("camera") is None
+        assert reg.n_cortices == 0
+
+    def test_unassign(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        reg.unassign("camera")
+        assert reg.cortex_for("camera") is None
+        assert reg.n_assigned == 0
+
+    def test_unassign_unknown_raises(self):
+        reg = CortexRegistry()
+        with pytest.raises(KeyError):
+            reg.unassign("camera")
+
+    def test_properties(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.register(CortexSpec(name="motor"))
+        reg.assign("camera", "visual")
+        assert reg.n_cortices == 2
+        assert reg.n_assigned == 1
+        assert reg.cortex_names == ["motor", "visual"]
+
+    def test_summary(self):
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="visual"))
+        reg.assign("camera", "visual")
+        s = reg.summary()
+        assert "CortexRegistry" in s
+        assert "camera" in s
+
+    def test_repr(self):
+        reg = CortexRegistry()
+        assert "CortexRegistry" in repr(reg)
+
+
+# ── Phase 6: Learned scheduling ─────────────────────────────────────
+
+from canvas_engineering.scheduling import LearnedScheduler
+
+
+class TestLearnedScheduler:
+    def test_init(self):
+        sched = LearnedScheduler(n_regions=5, summary_dim=10, max_active=3)
+        assert sched.n_regions == 5
+        assert sched.max_active == 3
+
+    def test_forward_shape(self):
+        sched = LearnedScheduler(n_regions=5, summary_dim=10, max_active=3)
+        summaries = torch.randn(10)
+        active, log_probs = sched(summaries)
+        assert len(active) <= 3
+        assert all(isinstance(i, int) for i in active)
+        assert all(0 <= i < 5 for i in active)
+        assert log_probs.shape == (5,)
+
+    def test_forward_batched(self):
+        sched = LearnedScheduler(n_regions=5, summary_dim=10, max_active=3)
+        summaries = torch.randn(2, 10)
+        active, log_probs = sched(summaries)
+        assert len(active) <= 3
+
+    def test_max_active_capped(self):
+        sched = LearnedScheduler(n_regions=3, summary_dim=5, max_active=10)
+        assert sched.max_active == 3
+
+    def test_gradient_flows(self):
+        sched = LearnedScheduler(n_regions=4, summary_dim=8, max_active=2)
+        summaries = torch.randn(8, requires_grad=True)
+        active, log_probs = sched(summaries)
+        loss = log_probs.sum()
+        loss.backward()
+        assert summaries.grad is not None
+
+    def test_eval_mode_deterministic(self):
+        sched = LearnedScheduler(n_regions=4, summary_dim=8, max_active=2)
+        sched.eval()
+        summaries = torch.randn(8)
+        active1, _ = sched(summaries)
+        active2, _ = sched(summaries)
+        assert active1 == active2  # deterministic in eval
+
+    def test_repr(self):
+        sched = LearnedScheduler(n_regions=5, summary_dim=10, max_active=3)
+        r = repr(sched)
+        assert "LearnedScheduler" in r
+        assert "n_regions=5" in r
+
+
+# ── Phase 6: ClockExpr IR ───────────────────────────────────────────
+
+from canvas_engineering.clock_ir import (
+    ClockExpr, ClockContext,
+    Periodic, OnEvent, BoundaryExpr, And, Or, Not,
+    Cooldown as CDCooldown, MaxSilence as CDMaxSilence,
+    periodic as p_periodic, on as p_on, boundary as p_boundary,
+)
+
+
+class TestPeriodic:
+    def test_fires_on_period(self):
+        expr = Periodic(period=3)
+        ctx = ClockContext(external_t=0)
+        assert expr.evaluate(ctx) is True
+        ctx = ClockContext(external_t=1)
+        assert expr.evaluate(ctx) is False
+        ctx = ClockContext(external_t=3)
+        assert expr.evaluate(ctx) is True
+
+    def test_default_period_1(self):
+        expr = Periodic()
+        for t in range(5):
+            assert expr.evaluate(ClockContext(external_t=t)) is True
+
+    def test_repr(self):
+        expr = Periodic(period=4, domain="internal")
+        assert "period=4" in repr(expr)
+
+    def test_eq(self):
+        assert Periodic(3) == Periodic(3)
+        assert Periodic(3) != Periodic(4)
+
+    def test_roundtrip(self):
+        expr = Periodic(period=5, domain="internal")
+        d = expr.to_dict()
+        loaded = ClockExpr.from_dict(d)
+        assert loaded == expr
+
+
+class TestOnEvent:
+    def test_gt(self):
+        expr = OnEvent(source="err.prediction", gt=0.5)
+        ctx = ClockContext(summaries={"err": {"prediction": 0.8}})
+        assert expr.evaluate(ctx) is True
+        ctx = ClockContext(summaries={"err": {"prediction": 0.3}})
+        assert expr.evaluate(ctx) is False
+
+    def test_lt(self):
+        expr = OnEvent(source="err.prediction", lt=0.5)
+        ctx = ClockContext(summaries={"err": {"prediction": 0.3}})
+        assert expr.evaluate(ctx) is True
+        ctx = ClockContext(summaries={"err": {"prediction": 0.8}})
+        assert expr.evaluate(ctx) is False
+
+    def test_gt_and_lt(self):
+        expr = OnEvent(source="err.prediction", gt=0.2, lt=0.8)
+        # In band: True
+        ctx = ClockContext(summaries={"err": {"prediction": 0.5}})
+        assert expr.evaluate(ctx) is True
+        # Below: False
+        ctx = ClockContext(summaries={"err": {"prediction": 0.1}})
+        assert expr.evaluate(ctx) is False
+        # Above: False
+        ctx = ClockContext(summaries={"err": {"prediction": 0.9}})
+        assert expr.evaluate(ctx) is False
+
+    def test_no_summaries(self):
+        expr = OnEvent(source="err.prediction", gt=0.5)
+        ctx = ClockContext()
+        assert expr.evaluate(ctx) is False
+
+    def test_requires_gt_or_lt(self):
+        with pytest.raises(ValueError):
+            OnEvent(source="err.prediction")
+
+    def test_roundtrip(self):
+        expr = OnEvent(source="err.prediction", gt=0.5, lt=0.9)
+        loaded = ClockExpr.from_dict(expr.to_dict())
+        assert loaded == expr
+
+
+class TestBoundaryExpr:
+    def test_fires(self):
+        expr = BoundaryExpr("episode_end")
+        ctx = ClockContext(boundary="episode_end")
+        assert expr.evaluate(ctx) is True
+        ctx = ClockContext(boundary="other")
+        assert expr.evaluate(ctx) is False
+        ctx = ClockContext()
+        assert expr.evaluate(ctx) is False
+
+    def test_roundtrip(self):
+        expr = BoundaryExpr("episode_end")
+        loaded = ClockExpr.from_dict(expr.to_dict())
+        assert loaded == expr
+
+
+class TestClockCombinators:
+    def test_and(self):
+        left = Periodic(period=2)
+        right = Periodic(period=3)
+        expr = And(left, right)
+        # t=0: both fire
+        assert expr.evaluate(ClockContext(external_t=0)) is True
+        # t=2: only left fires
+        assert expr.evaluate(ClockContext(external_t=2)) is False
+        # t=6: both fire
+        assert expr.evaluate(ClockContext(external_t=6)) is True
+
+    def test_or(self):
+        left = Periodic(period=2)
+        right = Periodic(period=3)
+        expr = Or(left, right)
+        assert expr.evaluate(ClockContext(external_t=0)) is True
+        assert expr.evaluate(ClockContext(external_t=1)) is False
+        assert expr.evaluate(ClockContext(external_t=2)) is True
+        assert expr.evaluate(ClockContext(external_t=3)) is True
+
+    def test_not(self):
+        expr = Not(Periodic(period=2))
+        assert expr.evaluate(ClockContext(external_t=0)) is False
+        assert expr.evaluate(ClockContext(external_t=1)) is True
+
+    def test_complex_composition(self):
+        # Fire every 4 steps OR when prediction error > 0.5
+        expr = Or(Periodic(4), OnEvent("err.prediction", gt=0.5))
+        # t=0, no summaries: periodic fires
+        assert expr.evaluate(ClockContext(external_t=0)) is True
+        # t=1, high error: event fires
+        ctx = ClockContext(external_t=1, summaries={"err": {"prediction": 0.8}})
+        assert expr.evaluate(ctx) is True
+        # t=1, low error: neither fires
+        ctx = ClockContext(external_t=1, summaries={"err": {"prediction": 0.1}})
+        assert expr.evaluate(ctx) is False
+
+    def test_combinator_roundtrips(self):
+        expr = And(Or(Periodic(2), BoundaryExpr("ep_end")), Not(Periodic(3)))
+        d = expr.to_dict()
+        loaded = ClockExpr.from_dict(d)
+        assert loaded == expr
+
+
+class TestClockDecorators:
+    def test_cooldown(self):
+        expr = CDCooldown(Periodic(1), steps=3)
+        ctx = ClockContext(external_t=0, cooldown_until=0)
+        assert expr.evaluate(ctx) is True
+        ctx = ClockContext(external_t=1, cooldown_until=3)
+        assert expr.evaluate(ctx) is False
+        ctx = ClockContext(external_t=3, cooldown_until=3)
+        assert expr.evaluate(ctx) is True
+
+    def test_max_silence(self):
+        expr = CDMaxSilence(OnEvent("err.prediction", gt=100.0), steps=5)
+        # Never fired: force fire due to max_silence (last_fired=-1)
+        ctx = ClockContext(external_t=0, last_fired=-1)
+        assert expr.evaluate(ctx) is True
+        # Recently fired, event not triggered
+        ctx = ClockContext(external_t=2, last_fired=1,
+                           summaries={"err": {"prediction": 0.0}})
+        assert expr.evaluate(ctx) is False
+        # Silent for 5 steps: force fire
+        ctx = ClockContext(external_t=6, last_fired=1,
+                           summaries={"err": {"prediction": 0.0}})
+        assert expr.evaluate(ctx) is True
+
+    def test_decorator_roundtrips(self):
+        expr = CDMaxSilence(CDCooldown(Periodic(1), steps=2), steps=10)
+        loaded = ClockExpr.from_dict(expr.to_dict())
+        assert loaded == expr
+
+
+class TestClockSugar:
+    def test_periodic(self):
+        expr = p_periodic(4)
+        assert isinstance(expr, Periodic)
+        assert expr.period == 4
+
+    def test_on(self):
+        expr = p_on("err.prediction", gt=0.5)
+        assert isinstance(expr, OnEvent)
+        assert expr.source == "err.prediction"
+
+    def test_boundary(self):
+        expr = p_boundary("episode_end")
+        assert isinstance(expr, BoundaryExpr)
+        assert expr.name == "episode_end"
+
+
+class TestClockExprFromDictErrors:
+    def test_unknown_type(self):
+        with pytest.raises(ValueError, match="Unknown ClockExpr type"):
+            ClockExpr.from_dict({"type": "nonexistent"})
+
+
+# ── Phase 6: ConstraintSpec ─────────────────────────────────────────
+
+from canvas_engineering.program import ConstraintSpec, validate_constraints
+
+
+class TestConstraintSpec:
+    def test_defaults(self):
+        cs = ConstraintSpec()
+        assert cs.equivariance is None
+        assert cs.conservation is None
+        assert cs.causal_direction is None
+        assert cs.monotonicity is None
+
+    def test_custom(self):
+        cs = ConstraintSpec(
+            equivariance="translation",
+            conservation="energy",
+            causal_direction="acyclic",
+            monotonicity="non_decreasing",
+        )
+        assert cs.equivariance == "translation"
+        assert cs.conservation == "energy"
+        assert cs.causal_direction == "acyclic"
+        assert cs.monotonicity == "non_decreasing"
+
+    def test_frozen(self):
+        cs = ConstraintSpec()
+        with pytest.raises(AttributeError):
+            cs.equivariance = "rotation"
+
+    def test_region_program_with_constraints(self):
+        rp = RegionProgram(
+            family="state",
+            constraints=ConstraintSpec(equivariance="translation"),
+        )
+        assert rp.constraints is not None
+        assert rp.constraints.equivariance == "translation"
+
+    def test_constraint_roundtrip(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(
+                        equivariance="rotation",
+                        conservation="capacity",
+                        causal_direction="forward_only",
+                        monotonicity="non_increasing",
+                    ),
+                ),
+            },
+        )
+        d = prog.to_dict()
+        loaded = CanvasProgram.from_dict(d)
+        cs = loaded.regions["obs"].constraints
+        assert cs.equivariance == "rotation"
+        assert cs.conservation == "capacity"
+        assert cs.causal_direction == "forward_only"
+        assert cs.monotonicity == "non_increasing"
+
+    def test_constraint_default_not_in_dict(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(constraints=ConstraintSpec()),
+            },
+        )
+        d = prog.to_dict()
+        # All-default ConstraintSpec produces empty dict -> "constraints" key present but empty
+        # The region_program_to_dict includes it only if non-None
+        rp_dict = d.get("region_programs", {}).get("obs", {})
+        # The ConstraintSpec was set but all defaults -> to_dict returns empty dict
+        # Our impl always includes it if constraints is not None
+        assert "constraints" in rp_dict
+
+
+class TestValidateConstraints:
+    def test_no_constraints_no_violations(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),
+                "state": RegionProgram(family="state"),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert violations == []
+
+    def test_valid_constraints_no_violations(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(
+                        equivariance="translation",
+                        conservation="energy",
+                    ),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert violations == []
+
+    def test_invalid_equivariance(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(equivariance="invalid"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert len(violations) == 1
+        assert "equivariance" in violations[0]
+
+    def test_invalid_conservation(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(conservation="invalid"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert len(violations) == 1
+        assert "conservation" in violations[0]
+
+    def test_invalid_causal_direction(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="invalid"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert len(violations) == 1
+        assert "causal_direction" in violations[0]
+
+    def test_invalid_monotonicity(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(
+                    constraints=ConstraintSpec(monotonicity="invalid"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert len(violations) == 1
+        assert "monotonicity" in violations[0]
+
+    def test_acyclic_violation(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+            "b": (0, 2, 1, 2, 0, 1),
+        })
+        topology = CanvasTopology(connections=[
+            Connection(src="a", dst="b"),
+            Connection(src="b", dst="a"),  # creates cycle a -> b -> a
+        ])
+        schema = CanvasSchema(layout=layout, topology=topology)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "a": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="acyclic"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert any("acyclic" in v for v in violations)
+
+    def test_acyclic_no_violation(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+            "b": (0, 2, 1, 2, 0, 1),
+        })
+        topology = CanvasTopology(connections=[
+            Connection(src="a", dst="b"),
+            # No back-edge
+        ])
+        schema = CanvasSchema(layout=layout, topology=topology)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "a": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="acyclic"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert not any("acyclic" in v for v in violations)
+
+    def test_forward_only_violation(self):
+        layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
+            "late": RegionSpec(bounds=(2, 4, 0, 1, 0, 1)),
+            "early": RegionSpec(bounds=(0, 2, 1, 2, 0, 1)),
+        })
+        topology = CanvasTopology(connections=[
+            Connection(src="late", dst="early"),  # late -> early (t0=2 -> t0=0)
+        ])
+        schema = CanvasSchema(layout=layout, topology=topology)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "late": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="forward_only"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert any("forward_only" in v for v in violations)
+
+    def test_forward_only_no_violation(self):
+        layout = CanvasLayout(T=4, H=2, W=2, d_model=16, regions={
+            "early": RegionSpec(bounds=(0, 2, 0, 1, 0, 1)),
+            "late": RegionSpec(bounds=(2, 4, 1, 2, 0, 1)),
+        })
+        topology = CanvasTopology(connections=[
+            Connection(src="early", dst="late"),  # early -> late (t0=0 -> t0=2)
+        ])
+        schema = CanvasSchema(layout=layout, topology=topology)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "early": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="forward_only"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert not any("forward_only" in v for v in violations)
+
+    def test_no_topology_no_causal_violations(self):
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=16, regions={
+            "a": (0, 2, 0, 1, 0, 1),
+        })
+        schema = CanvasSchema(layout=layout)
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "a": RegionProgram(
+                    constraints=ConstraintSpec(causal_direction="acyclic"),
+                ),
+            },
+        )
+        violations = validate_constraints(prog)
+        assert not any("acyclic" in v for v in violations)
+
+
+# ── Exports ─────────────────────────────────────────────────────────
+
+
+class TestExports:
+    def test_all_new_symbols_in_all(self):
+        import canvas_engineering
+        expected = [
+            "FamilyCarrierEmbedding", "program_distance",
+            "LearnedScheduler",
+            "ClockExpr", "ClockContext", "Periodic", "OnEvent", "BoundaryExpr",
+            "And", "Or", "Not", "ClockCooldown", "ClockMaxSilence",
+            "clock_periodic", "clock_on", "clock_boundary",
+            "MaskSpec", "Rect", "rect_cover", "mask_to_index_pairs",
+            "CortexSpec", "CortexRegistry",
+            "IdentitySpec", "SlotBindingModule",
+            "ConstraintSpec", "validate_constraints",
+        ]
+        for name in expected:
+            assert name in canvas_engineering.__all__, f"{name} not in __all__"
+            assert hasattr(canvas_engineering, name), f"{name} not importable"
+
+    def test_version_bumped(self):
+        import canvas_engineering
+        assert canvas_engineering.__version__ == "0.4.0"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
