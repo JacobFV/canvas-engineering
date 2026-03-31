@@ -312,6 +312,33 @@ Fill resolution operates in **real-time space** — a slow region with `period=4
 
 INTERPOLATE supports higher-order interpolation via `interpolation_order`: order=1 is linear lerp, order=N uses inverse-distance weighting over N+1 nearest anchors with weights `1/dist^N`. Always non-negative, no learned parameters.
 
+## Typed process layer (v2)
+
+v1 declares *structure* -- where regions live and who talks to whom. v2 adds *process semantics* -- what each region is, how it learns, when it runs, and what gets compiled away at deploy.
+
+`CanvasProgram` layers on top of `CanvasSchema`. Each region gets a **family** (observation, state, memory, residual, action), a **carrier** (deterministic, diffusive, filter, memory, residual), a **clock** (periodic, event-triggered, boundary), and a **compile mode** (runtime, freeze, constant, export).
+
+```python
+from dataclasses import dataclass
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class Robot:
+    camera: Field = Field(12, 12, family="observation", carrier="diffusive")
+    joints: Field = Field(1, 8, family="observation", carrier="deterministic")
+    belief: Field = Field(4, 4, family="state", tags=("belief",))
+    memory: Field = Field(2, 4, family="memory")
+    action: Field = Field(1, 8, family="action", loss_weight=2.0)
+
+bound, program = compile_program(Robot(), T=8, d_model=256)
+
+# program.regions["camera"].family == "observation"
+# Connection operators auto-derived from family pairs:
+#   observation → state = "observe", state → action = "act", etc.
+```
+
+`compile_program()` calls `compile_schema()` internally, then reads `family`, `tags`, and `carrier` from each `Field` to build the program. Existing `compile_schema()` code is unchanged. See the [docs](https://jacobfv.github.io/canvas-engineering/concepts/program-layer/) for families, carriers, clocks, scheduling, and the program compiler.
+
 ## Attention function types
 
 Not all connections should use the same attention mechanism. A `Connection` can declare its `fn` — the type of function used for that edge. Regions can also set `default_attn` — a default for all outgoing connections. The schema declares *intent*; execution is backend-dependent.
@@ -518,6 +545,11 @@ The schema file is human-readable JSON. It declares everything needed to interpr
 | `transfer_distance()` | Cosine distance between semantic type embeddings |
 | `CanvasSchema` | Portable bundle: layout + topology + metadata, JSON-serializable |
 | `ActionHead` | MLP decoder: latent channels → robot actions |
+| **Typed process layer (v2)** | |
+| `CanvasProgram` | Typed process layer: families, carriers, clocks, learning, compile modes |
+| `RegionScheduler` | Clock-driven region firing decisions |
+| `ProgramCompiler` | Deploy-time freeze/constant/export passes |
+| `compile_program()` | Compile types → BoundSchema + CanvasProgram |
 | **Looped attention (adaptive compute)** | |
 | `LoopedBlockWrapper` | Wrap **any** transformer block for looped execution |
 | `graft_looped_blocks()` | One-line grafting onto CogVideoX (auto-detects block type) |

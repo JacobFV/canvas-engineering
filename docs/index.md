@@ -23,6 +23,7 @@ Large video diffusion models generate video. The **spatiotemporal canvas** exten
 ## Key features
 
 - **`Field` + `compile_schema()`** — Declare Python types whose fields are latent regions, compile to canvas schemas with auto-wired connectivity
+- **`CanvasProgram`** — Typed process layer with families, carriers, clocks, and compile modes
 - **`RegionSpec`** — Declare geometry, temporal frequency, loss weight, semantic type, and default attention function per region
 - **`CanvasTopology`** — Directed graph of attention operations with temporal constraints and per-edge function types
 - **`CanvasSchema`** — Portable JSON-serializable bundle (layout + topology + metadata)
@@ -53,4 +54,5 @@ All examples train real models and generate visualizations. No GPU required.
 - [Canvas Types](concepts/canvas-types.md) — The compositional type system
 - [The Canvas](concepts/canvas.md) — How regions, frequency, and loss weighting work
 - [Attention Functions](concepts/attention-functions.md) — The full lineup of 18 function types
+- [Program Layer](concepts/program-layer.md) — Typed process semantics for regions
 - [Design Recipes](recipes/robot.md) — Real-world schema patterns

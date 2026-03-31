@@ -64,6 +64,8 @@ nav:
   - Concepts:
     - The Canvas: concepts/canvas.md
     - Canvas Types: concepts/canvas-types.md
+    - Program Layer: concepts/program-layer.md
+    - Carriers: concepts/carriers.md
     - Topology: concepts/topology.md
     - Attention Functions: concepts/attention-functions.md
     - Semantic Types: concepts/semantic-types.md
@@ -89,10 +91,18 @@ nav:
   - API Reference:
     - canvas: api/canvas.md
     - connectivity: api/connectivity.md
+    - program: api/program.md
+    - residuals: api/residuals.md
+    - scheduling: api/scheduling.md
+    - learning: api/learning.md
+    - compiler: api/compiler.md
     - schema: api/schema.md
     - types: api/types.md
     - looped_block: api/looped_block.md
     - graft: api/graft.md
+  - Design:
+    - v2 Spec: design/v2-spec.md
+    - Canvas Types Spec: design/canvas-types-spec.md
   - Research:
     - Empirical Results: research/results.md
     - The Type System Thesis: research/type-system.md

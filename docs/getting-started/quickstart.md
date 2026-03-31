@@ -76,3 +76,34 @@ topology = CanvasTopology(connections=[
 # Compile to attention mask
 mask = topology.to_attention_mask(layout)  # (320, 320) float tensor
 ```
+
+## Compile with process semantics (v2)
+
+Use `compile_program()` to get typed process semantics with auto-wired operators:
+
+```python
+from dataclasses import dataclass
+from canvas_engineering import Field, compile_program
+
+@dataclass
+class Robot:
+    camera: Field = Field(6, 6, family="observation")
+    belief: Field = Field(4, 4, family="state", tags=("belief",))
+    action: Field = Field(1, 4, family="action", loss_weight=2.0)
+
+bound, program = compile_program(Robot(), T=8, d_model=256)
+
+# program.regions has typed metadata per field:
+print(program.regions["camera"].family)   # "observation"
+print(program.regions["belief"].carrier)  # "deterministic"
+
+# Auto-wired operators on connections:
+for c in program.schema.topology.connections:
+    if c.operator != "attend":
+        print(f"{c.src} → {c.dst}: {c.operator}")
+# camera → belief: observe
+# belief → camera: predict
+# belief → action: act
+```
+
+`compile_schema()` still works unchanged — `compile_program()` wraps it and adds the program layer.
