@@ -32,6 +32,35 @@ import torch.nn as nn
 from canvas_engineering.canvas import CanvasLayout
 
 
+def program_distance(
+    a_spec: "RegionSpec",
+    a_program: "RegionProgram",
+    b_spec: "RegionSpec",
+    b_program: "RegionProgram",
+) -> float:
+    """Distance including semantic + family + carrier penalties.
+
+    Computes a composite transfer distance between two region pairs,
+    combining the base semantic embedding distance with penalties for
+    mismatched family and carrier attributes.
+
+    Args:
+        a_spec: RegionSpec for region A (must have semantic_embedding).
+        a_program: RegionProgram for region A.
+        b_spec: RegionSpec for region B (must have semantic_embedding).
+        b_program: RegionProgram for region B.
+
+    Returns:
+        Float distance >= 0. Lower = more compatible for transfer.
+    """
+    from canvas_engineering.canvas import transfer_distance as _transfer_distance
+
+    base = _transfer_distance(a_spec, b_spec)
+    family_penalty = 0.0 if a_program.family == b_program.family else 0.3
+    carrier_penalty = 0.0 if a_program.carrier == b_program.carrier else 0.2
+    return base + family_penalty + carrier_penalty
+
+
 def auto_semantic_type(path: str) -> str:
     """Generate a human-readable semantic type from a dotted field path.
 

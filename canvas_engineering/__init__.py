@@ -10,8 +10,8 @@ Quick start:
 """
 
 from canvas_engineering.canvas import (
-    ATTENTION_TYPES, CanvasLayout, PeriodEmbedding, RegionSpec,
-    SpatiotemporalCanvas, transfer_distance,
+    ATTENTION_TYPES, CanvasLayout, FamilyCarrierEmbedding, PeriodEmbedding,
+    RegionSpec, SpatiotemporalCanvas, transfer_distance,
 )
 from canvas_engineering.looped_block import LoopedBlockWrapper
 from canvas_engineering.graft import graft_looped_blocks, freeze_full, freeze_half
@@ -47,7 +47,7 @@ from canvas_engineering.attention import (
 from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.learning import default_learning, FAMILY_DEFAULTS
 from canvas_engineering.compiler import ProgramCompiler, CompiledProgram
-from canvas_engineering.scheduling import RegionScheduler
+from canvas_engineering.scheduling import RegionScheduler, LearnedScheduler
 from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
@@ -55,16 +55,29 @@ from canvas_engineering.types import (
 )
 from canvas_engineering.program import (
     CanvasProgram, RegionProgram, ConnectionProgram,
-    ClockSpec, LearningSpec,
+    ClockSpec, LearningSpec, ConstraintSpec,
+    validate_constraints,
     REGION_FAMILIES, CARRIERS, OPERATORS, WRITE_MODES, COMPILE_MODES,
 )
 from canvas_engineering.semantic import (
     SemanticConditioner,
     auto_semantic_type,
     compute_semantic_embeddings,
+    program_distance,
 )
+from canvas_engineering.clock_ir import (
+    ClockExpr, ClockContext,
+    Periodic, OnEvent, BoundaryExpr, And, Or, Not, Cooldown as ClockCooldown,
+    MaxSilence as ClockMaxSilence,
+    periodic as clock_periodic, on as clock_on, boundary as clock_boundary,
+)
+from canvas_engineering.masks import (
+    MaskSpec, Rect, rect_cover, mask_to_index_pairs,
+)
+from canvas_engineering.cortex import CortexSpec, CortexRegistry
+from canvas_engineering.identity import IdentitySpec, SlotBindingModule
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -83,6 +96,7 @@ __all__ = [
     "CanvasTopology",
     "TemporalFill",
     "PeriodEmbedding",
+    "FamilyCarrierEmbedding",
     "Field",
     "LayoutStrategy",
     "ConnectivityPolicy",
@@ -95,6 +109,8 @@ __all__ = [
     "ConnectionProgram",
     "ClockSpec",
     "LearningSpec",
+    "ConstraintSpec",
+    "validate_constraints",
     "REGION_FAMILIES",
     "CARRIERS",
     "OPERATORS",
@@ -103,6 +119,7 @@ __all__ = [
     "SemanticConditioner",
     "auto_semantic_type",
     "compute_semantic_embeddings",
+    "program_distance",
     "ATTENTION_REGISTRY",
     "create_attention",
     "register_attention",
@@ -127,8 +144,34 @@ __all__ = [
     "ResidualSpec",
     "ResidualAccumulator",
     "RegionScheduler",
+    "LearnedScheduler",
     "default_learning",
     "FAMILY_DEFAULTS",
     "ProgramCompiler",
     "CompiledProgram",
+    # Clock IR
+    "ClockExpr",
+    "ClockContext",
+    "Periodic",
+    "OnEvent",
+    "BoundaryExpr",
+    "And",
+    "Or",
+    "Not",
+    "ClockCooldown",
+    "ClockMaxSilence",
+    "clock_periodic",
+    "clock_on",
+    "clock_boundary",
+    # Masks
+    "MaskSpec",
+    "Rect",
+    "rect_cover",
+    "mask_to_index_pairs",
+    # Cortex
+    "CortexSpec",
+    "CortexRegistry",
+    # Identity
+    "IdentitySpec",
+    "SlotBindingModule",
 ]
