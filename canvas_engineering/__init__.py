@@ -77,7 +77,7 @@ from canvas_engineering.masks import (
 from canvas_engineering.cortex import CortexSpec, CortexRegistry
 from canvas_engineering.identity import IdentitySpec, SlotBindingModule
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",

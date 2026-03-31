@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -v --timeout=300)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python -m pytest tests/ -q --timeout=300)",
+      "Bash(python:*)",
+      "Bash(wc -l canvas_engineering/*.py)",
+      "Bash(wc -l tests/*.py)",
+      "Bash(find /Users/jacob/.claude/projects/-Users-jacob-projects-canvas-engineering/memory/v2-plan/ -type f -name *.md)",
+      "Bash(grep -r \"^\\\\s*\\\\.\\\\.\\\\.\\\\s*$\\\\|^\\\\s*pass\\\\s*$\\\\|^\\\\s*TODO\\\\|^\\\\s*FIXME\" /Users/jacob/projects/canvas-engineering/canvas_engineering/*.py)"
+    ]
+  }
+}
