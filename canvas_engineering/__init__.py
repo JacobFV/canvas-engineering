@@ -64,7 +64,7 @@ from canvas_engineering.semantic import (
     compute_semantic_embeddings,
 )
 
-__version__ = "0.2.0"
+__version__ = "2.0.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
