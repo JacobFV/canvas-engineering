@@ -81,8 +81,14 @@ nav:
     - "07: Hospital ICU": examples/07-hospital-icu.md
     - "08: Minecraft World Model": examples/08-minecraft-world-model.md
     - "09: BCI Neural Decoding": examples/09-bci.md
+    - "09b: BCI + TRIBE v2": examples/09b-bci-tribe.md
     - "10: Fusion Reactor": examples/10-fusion-reactor.md
     - "11: Mars Colony": examples/11-mars-colony.md
+    - "14: Saccading Vision": examples/14-saccading-vision.md
+    - "15: World Model Carriers": examples/15-world-model-carriers.md
+    - "16: Memory Consolidation": examples/16-memory-consolidation.md
+    - "17: Graph Parser": examples/17-graph-parser.md
+    - "18: Sparse Reflection": examples/18-sparse-reflection.md
   - Design Recipes:
     - Robot Manipulation: recipes/robot.md
     - Computer Use Agent: recipes/computer-use.md
