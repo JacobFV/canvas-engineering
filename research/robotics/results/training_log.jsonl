@@ -1,0 +1,3 @@
+{"step": 31, "phase": "imitation", "timestamp": 1775001093.6648362, "epoch": 0, "mode": "canvas", "loss": 0.48690838871463654, "vel_loss": 0.48690838871463654, "comm_reg": 0.0, "lr": 0.0007500000000000001}
+{"step": 62, "phase": "imitation", "timestamp": 1775001097.38915, "epoch": 1, "mode": "canvas", "loss": 0.4814078692466982, "vel_loss": 0.4814078692466982, "comm_reg": 0.0, "lr": 0.00025000000000000017}
+{"step": 93, "phase": "imitation", "timestamp": 1775001100.9803278, "epoch": 2, "mode": "canvas", "loss": 0.48114031360995385, "vel_loss": 0.48114031360995385, "comm_reg": 0.0, "lr": 0.0}
