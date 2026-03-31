@@ -50,7 +50,6 @@ bound = compile_schema(
     company, T=4, H=64, W=64, d_model=256,
     connectivity=ConnectivityPolicy(
         intra="dense",                 # within each agent: all fields see all fields
-        parent_child="matched_fields", # company.thought <-> employee[i].thought
         array_element="isolated",      # employees don't see each other directly
     ),
 )

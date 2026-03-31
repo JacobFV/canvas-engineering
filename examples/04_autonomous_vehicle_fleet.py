@@ -164,7 +164,7 @@ class RoadNetwork:
     zones: list = dc_field(default_factory=list)
 
 
-CANVAS_H, CANVAS_W = 25, 24
+CANVAS_H, CANVAS_W = 32, 32
 
 
 def make_schema(connectivity_policy):
@@ -180,13 +180,10 @@ def make_schema(connectivity_policy):
 print("Compiling schemas...")
 t0 = time.time()
 bound_isolated = make_schema(ConnectivityPolicy(
-    intra="dense", parent_child="hub_spoke",
     array_element="isolated", temporal="dense"))
 bound_ring = make_schema(ConnectivityPolicy(
-    intra="dense", parent_child="hub_spoke",
     array_element="ring", temporal="dense"))
 bound_dense = make_schema(ConnectivityPolicy(
-    intra="dense", parent_child="hub_spoke",
     array_element="dense", temporal="dense"))
 
 for name, b in [("isolated", bound_isolated), ("ring", bound_ring),

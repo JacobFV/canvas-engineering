@@ -89,7 +89,6 @@ bound_structured = compile_schema(
     T=1, H=16, W=16, d_model=48,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",
         array_element="matched_fields",
     ),
     layout_strategy=LayoutStrategy.INTERLEAVED,

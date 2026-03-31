@@ -142,7 +142,6 @@ bound = compile_schema(
     reactor, T=32, H=64, W=64, d_model=512,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",
         temporal="causal",          # real-time control, no future information
     ),
 )

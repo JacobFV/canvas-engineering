@@ -100,7 +100,6 @@ bound = compile_schema(
     agent, T=64, H=64, W=64, d_model=512,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",    # agent-level fields <-> all modules
         temporal="causal",           # causal for real-time play
     ),
 )

@@ -103,7 +103,6 @@ bound = compile_schema(
     bci, T=32, H=32, W=32, d_model=256,
     connectivity=ConnectivityPolicy(
         intra="dense",              # all system-level fields fully connected
-        parent_child="hub_spoke",   # intent <-> all arrays and decoders
         temporal="causal",          # real-time, <50ms latency
     ),
 )

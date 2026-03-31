@@ -109,7 +109,6 @@ def make_schema(n_aircraft=N_AIRCRAFT, array_element="dense", conflict_weight=10
         tracon, T=1, H=16, W=16, d_model=32,
         connectivity=ConnectivityPolicy(
             intra="dense",
-            parent_child="hub_spoke",
             array_element=array_element,
             temporal="dense",
         ),
