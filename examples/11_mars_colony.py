@@ -190,7 +190,6 @@ bound = compile_schema(
     colony, T=32, H=96, W=96, d_model=512,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",      # situation awareness sees everything
         array_element="ring",          # rovers share with geographic neighbors
         temporal="causal",
     ),

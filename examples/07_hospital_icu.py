@@ -179,10 +179,9 @@ ward = ICUWard(
 )
 
 bound = compile_schema(
-    ward, T=1, H=24, W=24, d_model=32,
+    ward, T=1, H=32, W=32, d_model=32,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",
         array_element="ring",
         temporal="dense",
     ),

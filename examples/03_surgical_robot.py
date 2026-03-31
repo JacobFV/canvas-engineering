@@ -65,7 +65,6 @@ bound = compile_schema(
     system, T=16, H=48, W=48, d_model=512,
     connectivity=ConnectivityPolicy(
         intra="dense",              # all system-level fields attend to each other
-        parent_child="hub_spoke",   # surgical_field sees all arm fields and vice versa
         array_element="isolated",   # left and right arms are independent streams
         temporal="causal",          # strictly causal: no future leakage
     ),

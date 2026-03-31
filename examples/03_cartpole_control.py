@@ -102,7 +102,6 @@ bound = compile_schema(
     CartPoleAgent(), T=1, H=4, W=4, d_model=32,
     connectivity=ConnectivityPolicy(
         intra="dense",
-        parent_child="hub_spoke",  # plan sees obs fields, action reads plan
     ),
 )
 
