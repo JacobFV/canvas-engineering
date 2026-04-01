@@ -53,8 +53,8 @@ def main():
 
     # Fast mode overrides
     if args.fast:
-        args.imitation_epochs = 5
-        args.selfplay_episodes = 10
+        args.imitation_epochs = 3
+        args.selfplay_episodes = 5
         args.eval_episodes = 3
 
     from research.robotics.train import TrainConfig, train_all_models
@@ -69,10 +69,11 @@ def main():
     )
 
     if args.fast:
-        config.n_expert_episodes = 20
-        config.expert_max_steps = 100
-        config.selfplay_steps = 50
-        config.n_envs_train = 8
+        config.n_expert_episodes = 10
+        config.expert_max_steps = 50
+        config.selfplay_steps = 30
+        config.n_envs_train = 4
+        config.batch_size = 16
 
     print("=" * 60)
     print("Canvas-Engineering Multi-Robot Fleet Experiment")
