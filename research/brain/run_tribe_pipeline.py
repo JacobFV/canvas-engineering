@@ -179,7 +179,7 @@ def main():
     roi_indices = get_roi_indices()
     print("Mapped {} ROIs".format(len(roi_indices)))
 
-    bound, program = build_cortical_program()
+    bound, program, _ = build_cortical_program()
     canvas_region_names = list(bound.field_names)
     print("Canvas regions: {}".format(len(canvas_region_names)))
 
