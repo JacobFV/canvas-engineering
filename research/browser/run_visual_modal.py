@@ -44,30 +44,14 @@ sys.path.insert(0, '/root')
 sys.path.insert(0, '/root/research/browser')
 os.chdir('/root/research/browser')
 
-from train import BrowserCanvasModel, train_model
-from environment import BrowserEnvironment, generate_demonstrations
-from browser_canvas import build_browser_program
+from train import train
 
 print("=== Training Canvas Browser Agent ===")
-bound, program = build_browser_program()
-
-model = BrowserCanvasModel(d_model=128, n_layers=4)
-print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-# Generate demos
-demos = generate_demonstrations(200)
-print(f"Demos: {len(demos)} episodes, {sum(len(d['observations']) for d in demos)} transitions")
-
-# Train
-history = train_model(model, demos, n_epochs=80)
+model, history = train(mode='canvas', d_model=128, n_layers=4, epochs=80)
 
 # Save checkpoint
 torch.save(model.state_dict(), 'results/checkpoint_canvas.pt')
 print("Saved checkpoint")
-
-# Save training history
-with open('results/training_history.json', 'w') as f:
-    json.dump({'final_accuracy': history[-1].get('val_action_accuracy_top1', 0)}, f)
 """
     proc = subprocess.Popen(
         [sys.executable, "-u", "-c", train_script],
