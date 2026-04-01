@@ -57,8 +57,12 @@ def main():
         args.selfplay_episodes = 5
         args.eval_episodes = 3
 
-    from research.robotics.train import TrainConfig, train_all_models
-    from research.robotics.evaluate import run_evaluation
+    try:
+        from research.robotics.train import TrainConfig, train_all_models
+        from research.robotics.evaluate import run_evaluation
+    except ImportError:
+        from train import TrainConfig, train_all_models
+        from evaluate import run_evaluation
 
     config = TrainConfig(
         n_robots=args.n_robots,
