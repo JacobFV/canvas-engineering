@@ -107,9 +107,9 @@ def run_brain():
             "results_tar": _tar_dir("/root/research/brain/results")}
 
 
-@app.function(image=cpu_image, timeout=7200, cpu=8, memory=32768)
+@app.function(image=cpu_image, timeout=21600, cpu=8, memory=32768)
 def run_robotics():
-    """Robotics track: full training with scaling analysis."""
+    """Robotics track: full training with scaling analysis. 6hr timeout."""
     import os
     os.makedirs("/root/research/robotics/results", exist_ok=True)
     code, output = _run_script("/root/research/robotics/run.py", "robotics")
