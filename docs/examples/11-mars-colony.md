@@ -2,7 +2,21 @@
 
 The capstone. 70+ fields across 6 subsystems with hub-spoke connectivity. Cascading failure prediction through cross-system reasoning — something a per-subsystem model structurally cannot do.
 
-**Source**: [`examples/11_mars_colony.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/11_mars_colony.py) *(coming soon)*
+**Source**: [`examples/11_mars_colony.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/11_mars_colony.py)
+
+## Results
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/11_mars_colony.png" alt="Example 11 results" width="100%">
+</p>
+
+**Top left**: Canvas layout — six subsystems (life support, power, thermal, comms, ISRU, crew) with hub-spoke colony-level coordination.
+
+**Top right**: Failure prediction accuracy by subsystem — Greenhouse 100%, Life Support 66%, Power 59%, ISRU 50%, overall 90.4%.
+
+**Bottom left**: Cross-system correlations (learned) — heatmap shows the model discovers inter-subsystem dependencies, with strongest coupling between power and life support.
+
+**Bottom right**: Training curves — alert loss, subsystem loss, and total loss over 500 epochs.
 
 ## What it demonstrates
 
@@ -67,3 +81,10 @@ A flat model trained on colony data learns statistical correlations between subs
 
 !!! note "Task spec"
     Full implementation details in [`examples/tasks/11_mars_colony.md`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/tasks/11_mars_colony.md).
+
+## Run it
+
+```bash
+python examples/11_mars_colony.py
+# Generates: assets/examples/11_mars_colony.png
+```

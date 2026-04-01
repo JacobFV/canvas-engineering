@@ -2,8 +2,7 @@
 
 Three memory timescales with boundary clocks: working memory updates every step, episodic memory writes on event triggers, and semantic memory consolidates at episode boundaries. After training, ProgramCompiler exports semantic memory as a frozen buffer and removes episodic storage.
 
-**Source**: [`examples/16_memory_consolidation.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/16_memory_consolidation.py) *(coming soon)*
-
+**Source**: [`examples/16_memory_consolidation.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/16_memory_consolidation.py) 
 ## Result
 
 <p align="center">

@@ -2,8 +2,7 @@
 
 Operator types and fixpoint iteration for structured prediction. Tokens are observed, spans are bound from tokens, and graph nodes are integrated from spans. Five refinement steps iterate the parse until edge predictions stabilize. ClockExpr IR serializes the scheduling rules for reproducible deployment.
 
-**Source**: [`examples/17_graph_parser.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/17_graph_parser.py) *(coming soon)*
-
+**Source**: [`examples/17_graph_parser.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/17_graph_parser.py) 
 ## Result
 
 <p align="center">

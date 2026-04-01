@@ -2,7 +2,7 @@
 
 Event-triggered visual attention with a fovea that fires only when prediction error exceeds a threshold. Five region families coordinate gaze control: periphery and fovea observe the scene, a state region integrates the scene model, a residual region tracks prediction error, and an action region decides where to look next.
 
-**Source**: [`examples/14_saccading_vision.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/14_saccading_vision.py) *(coming soon)*
+**Source**: [`examples/14_saccading_vision.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/14_saccading_vision.py)
 
 ## Result
 

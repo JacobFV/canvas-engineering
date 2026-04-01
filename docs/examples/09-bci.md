@@ -2,7 +2,21 @@
 
 Real-time multi-output decoding with closed-loop feedback. Feedback fields (`cursor_feedback`, `haptic_feedback`) create a closed-loop training signal that pure feedforward decoding misses.
 
-**Source**: [`examples/09_bci.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/09_bci.py) *(coming soon)*
+**Source**: [`examples/09_bci.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/09_bci.py)
+
+## Results
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/09_brain_computer_interface.png" alt="Example 09 results" width="100%">
+</p>
+
+**Top left**: Canvas layout — neural input, motor intention, feedback, and adaptation regions with closed-loop connectivity.
+
+**Top right**: Cursor decoding predicted vs true velocity (MSE=0.004) — tight diagonal confirms accurate real-time cursor control.
+
+**Bottom left**: Multi-decoder performance — cursor MSE 0.004, click accuracy 67.8%, phoneme accuracy 8.2%, showing joint decoding from shared latent.
+
+**Bottom right**: Training curves — cursor loss and speech loss converge over 500 epochs, with total loss stabilizing.
 
 ## What it demonstrates
 
@@ -55,3 +69,10 @@ The feedback fields are not targets — they are a closed loop. The model must p
 
 !!! note "Task spec"
     Full implementation details in [`examples/tasks/09_bci.md`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/tasks/09_bci.md).
+
+## Run it
+
+```bash
+python examples/09_brain_computer_interface.py
+# Generates: assets/examples/09_brain_computer_interface.png
+```

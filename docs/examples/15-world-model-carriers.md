@@ -2,7 +2,7 @@
 
 Mixed carrier dynamics in a single canvas: observed state is deterministic, predicted futures are diffusive (noise + denoise), and belief estimates use a filter carrier (predict-correct). Demonstrates that family and carrier are orthogonal -- two observation regions can have different physical dynamics.
 
-**Source**: [`examples/15_world_model_carriers.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/15_world_model_carriers.py) *(coming soon)*
+**Source**: [`examples/15_world_model_carriers.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/15_world_model_carriers.py)
 
 ## Result
 

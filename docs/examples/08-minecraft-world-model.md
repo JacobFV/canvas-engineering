@@ -2,7 +2,21 @@
 
 Temporal hierarchy (period 1/4/16) on a world model task. The imagination buffer predicts future states, and the imagination loss provides a self-supervised signal that generalizes beyond behavioral cloning.
 
-**Source**: [`examples/08_minecraft_world_model.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/08_minecraft_world_model.py) *(coming soon)*
+**Source**: [`examples/08_minecraft_world_model.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/08_minecraft_world_model.py)
+
+## Results
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/08_world_model_minecraft.png" alt="Example 08 results" width="100%">
+</p>
+
+**Top left**: Canvas layout with multi-rate regions — perception at period=1, planning at period=4, imagination at period=16, and a shared world model.
+
+**Top right**: Training loss over 400 epochs, dropping from ~1.0 to ~0.01 as the model learns next-frame prediction.
+
+**Bottom left**: Predicted vs true next frame (sample 0) — patch-level comparison showing the model captures spatial structure.
+
+**Bottom right**: Imagination rollout quality — MSE grows with rollout horizon but remains usable (val MSE=0.065 at 8 steps), confirming the imagination buffer learns coherent multi-step predictions.
 
 ## What it demonstrates
 
@@ -54,3 +68,10 @@ The agent receives no reward signal during training. The imagination buffer lear
 
 !!! note "Task spec"
     Full implementation details in [`examples/tasks/08_minecraft_world_model.md`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/tasks/08_minecraft_world_model.md).
+
+## Run it
+
+```bash
+python examples/08_world_model_minecraft.py
+# Generates: assets/examples/08_world_model_minecraft.png
+```

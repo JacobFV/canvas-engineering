@@ -2,7 +2,21 @@
 
 Multi-timescale control with safety constraints. The disruption predictor (`loss_weight=10`) catches disruptions earlier than a flat model, and multi-rate diagnostics create a natural sensor fusion hierarchy.
 
-**Source**: [`examples/10_fusion_reactor.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/10_fusion_reactor.py) *(coming soon)*
+**Source**: [`examples/10_fusion_reactor.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/10_fusion_reactor.py)
+
+## Results
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JacobFV/canvas-engineering/main/assets/examples/10_nuclear_fusion_reactor.png" alt="Example 10 results" width="100%">
+</p>
+
+**Top left**: Canvas layout with multi-rate diagnostic regions — magnetic at period=1, thermal at period=10, neutron at period=50, plus actuator and safety fields.
+
+**Top right**: Disruption prediction ROC (AUC=0.971) — the safety-weighted loss drives near-perfect disruption detection.
+
+**Bottom left**: Control response — predicted vs true coil currents (MSE=0.53), showing the actuator fields learn physically plausible control outputs.
+
+**Bottom right**: Training curves — disruption loss drops fastest (10× weight), control loss follows, total loss stabilizes.
 
 ## What it demonstrates
 
@@ -53,3 +67,10 @@ Period=1 magnetic diagnostics update every step. Period=50 neutron diagnostics u
 
 !!! note "Task spec"
     Full implementation details in [`examples/tasks/10_fusion_reactor.md`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/tasks/10_fusion_reactor.md).
+
+## Run it
+
+```bash
+python examples/10_nuclear_fusion_reactor.py
+# Generates: assets/examples/10_nuclear_fusion_reactor.png
+```

@@ -2,8 +2,7 @@
 
 Uncertainty-driven self-reflection with learned scheduling. A self-model region activates only when the residual accumulator detects ambiguous states, avoiding wasted compute on confident predictions. ConstraintSpec enforces causal direction and conservation. After training, ProgramCompiler freezes observation regions and exports the self-model.
 
-**Source**: [`examples/18_sparse_reflection.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/18_sparse_reflection.py) *(coming soon)*
-
+**Source**: [`examples/18_sparse_reflection.py`](https://github.com/JacobFV/canvas-engineering/blob/main/examples/18_sparse_reflection.py) 
 ## Result
 
 <p align="center">
