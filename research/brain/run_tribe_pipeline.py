@@ -233,15 +233,23 @@ def main():
     print("=" * 60)
 
     from train import run_all_baselines
-    run_all_baselines(
-        data_path="results/tribe_data.npz",
-        results_dir="results",
-        n_epochs=200,
-        d_model=128,
-        n_layers=3,
-        n_heads=8,
-        lr=1e-3,
-    )
+
+    # Load the saved data
+    data_file = np.load("results/tribe_data.npz")
+    data = {
+        "region_activations": data_file["region_activations"],
+        "labels": data_file["labels"],
+        "region_names": canvas_region_names,
+        "category_names": cat_names,
+    }
+
+    results = run_all_baselines(data=data, epochs=200, d_model=128)
+
+    # Save comparison summary
+    with open("results/comparison_summary.json", "w") as f:
+        json.dump({k: {kk: float(vv) if isinstance(vv, (int, float, np.floating)) else vv
+                       for kk, vv in v.items() if not isinstance(vv, (list, np.ndarray))}
+                   for k, v in results.items()}, f, indent=2)
 
     # Phase 3: Evaluate
     print("\n" + "=" * 60)
