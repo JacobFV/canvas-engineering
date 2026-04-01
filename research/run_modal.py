@@ -95,7 +95,7 @@ def _untar(b64_data, dest):
 
 
 @app.function(
-    image=brain_image, gpu="A10G", timeout=10800, cpu=4, memory=32768,
+    image=brain_image, gpu="A10G", timeout=28800, cpu=4, memory=32768,
     secrets=[modal.Secret.from_name("huggingface-secret", environment_name="test-20260327")],
 )
 def run_brain():
