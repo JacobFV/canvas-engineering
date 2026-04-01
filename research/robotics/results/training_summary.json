@@ -1,0 +1,29 @@
+{
+  "canvas": {
+    "n_params": 24518,
+    "n_regions": 51,
+    "n_connections": 189,
+    "train_time": 439.3161451816559,
+    "final_imitation_loss": 0.4827487425458047,
+    "final_selfplay_reward": -979.9858113905713,
+    "final_collisions": 164.0
+  },
+  "dense": {
+    "n_params": 24518,
+    "n_regions": 51,
+    "n_connections": 321,
+    "train_time": 644.9842617511749,
+    "final_imitation_loss": 0.48269053236130743,
+    "final_selfplay_reward": -1004.8068973679619,
+    "final_collisions": 212.0
+  },
+  "independent": {
+    "n_params": 24518,
+    "n_regions": 51,
+    "n_connections": 177,
+    "train_time": 362.50645208358765,
+    "final_imitation_loss": 0.48276110762549984,
+    "final_selfplay_reward": -987.0530426242096,
+    "final_collisions": 192.0
+  }
+}

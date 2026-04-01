@@ -1,0 +1,20 @@
+{
+  "cortical": {
+    "n_params": 814475,
+    "final_val_loss": 0.9815433025360107,
+    "final_val_cls_acc": 0.5714285714285714,
+    "final_val_region_loss": 0.006392533890902996
+  },
+  "dense": {
+    "n_params": 814475,
+    "final_val_loss": 1.6652103662490845,
+    "final_val_cls_acc": 0.2857142857142857,
+    "final_val_region_loss": 0.005337477661669254
+  },
+  "flat": {
+    "n_params": 56865,
+    "final_val_loss": 0.13989956676959991,
+    "final_val_cls_acc": 1.0,
+    "final_val_region_loss": 0.028485633432865143
+  }
+}

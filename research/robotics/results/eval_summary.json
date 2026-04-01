@@ -1,0 +1,17 @@
+{
+  "canvas": {
+    "final_formation_error": 1.695461096969268,
+    "mean_collisions": 67.0,
+    "mean_reward": -1194.6914779967494
+  },
+  "dense": {
+    "final_formation_error": 1.6946718024929954,
+    "mean_collisions": 67.0,
+    "mean_reward": -1194.4493682017276
+  },
+  "independent": {
+    "final_formation_error": 1.690142135972429,
+    "mean_collisions": 67.0,
+    "mean_reward": -1192.8004826030444
+  }
+}
