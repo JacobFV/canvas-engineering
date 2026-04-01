@@ -168,7 +168,7 @@ ROI_TO_CANVAS = {
 
 
 def main():
-    from cortical_canvas import STIMULUS_CATEGORIES, build_cortical_brain
+    from cortical_canvas import STIMULUS_CATEGORIES, build_cortical_program
 
     # Phase 1: Generate TRIBE v2 data
     print("=" * 60)
@@ -179,7 +179,7 @@ def main():
     roi_indices = get_roi_indices()
     print("Mapped {} ROIs".format(len(roi_indices)))
 
-    bound, program = build_cortical_brain()
+    bound, program = build_cortical_program()
     canvas_region_names = list(bound.field_names)
     print("Canvas regions: {}".format(len(canvas_region_names)))
 
