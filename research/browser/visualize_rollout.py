@@ -53,26 +53,18 @@ def render_page(ax, env, step_info=None):
     # Background
     ax.set_facecolor("#F8F9FA")
 
-    # Draw elements
+    # Draw elements from the environment's current page
     page = env.current_page
-    if hasattr(page, "elements"):
-        elements = page.elements
-    elif hasattr(env, "_pages") and env.current_page_idx < len(env._pages):
-        elements = env._pages[env.current_page_idx].get("elements", [])
-    else:
-        elements = []
+    elements = page.elements if hasattr(page, "elements") else []
 
     for elem in elements:
-        if isinstance(elem, dict):
-            etype = elem.get("type", "div")
-            x = elem.get("x", 0.5)
-            y = elem.get("y", 0.5)
-            w = elem.get("w", 0.15)
-            h = elem.get("h", 0.06)
-            text = elem.get("text", etype)
-            visible = elem.get("visible", True)
-        else:
-            continue
+        etype = getattr(elem, "type", "div") if not isinstance(elem, dict) else elem.get("type", "div")
+        x = getattr(elem, "x", 0.5) if not isinstance(elem, dict) else elem.get("x", 0.5)
+        y = getattr(elem, "y", 0.5) if not isinstance(elem, dict) else elem.get("y", 0.5)
+        w = getattr(elem, "width", 0.15) if not isinstance(elem, dict) else elem.get("w", 0.15)
+        h = getattr(elem, "height", 0.06) if not isinstance(elem, dict) else elem.get("h", 0.06)
+        text = getattr(elem, "text", etype) if not isinstance(elem, dict) else elem.get("text", etype)
+        visible = getattr(elem, "visible", True) if not isinstance(elem, dict) else elem.get("visible", True)
 
         if not visible:
             continue
@@ -113,25 +105,17 @@ def render_page(ax, env, step_info=None):
     ax.set_yticks([])
 
 
-def run_rollout_with_recording(model, env, task, max_steps=8):
+def run_rollout_with_recording(model, env, task_type=None, max_steps=8):
     """Run a rollout and record each step for visualization."""
     model.eval()
     frames = []
 
-    obs = env.reset(task)
-    screen = obs["screen"]
-    dom_elements = obs["dom_elements"]
-    dom_layout = obs["dom_layout"]
+    obs, task = env.reset(task_type=task_type)
 
-    instruction = torch.zeros(1, 32)
-    # Simple instruction encoding from task
-    task_type = task.get("type", "click")
-    type_idx = ACTION_NAMES.index(task_type) if task_type in ACTION_NAMES else 0
-    instruction[0, type_idx] = 1.0
-    instruction[0, 10:14] = torch.randn(4) * 0.1  # task embedding noise
+    task_desc = getattr(task, 'description', str(task_type or 'random'))
 
     frames.append({
-        "title": f"Task: {task.get('description', task_type)}",
+        "title": "Task: {}".format(task_desc),
         "action_name": "start",
         "target_x": 0.5,
         "target_y": 0.5,
@@ -140,16 +124,19 @@ def run_rollout_with_recording(model, env, task, max_steps=8):
         "done": False,
     })
 
+    instruction = torch.zeros(1, 32)
+    type_idx = ACTION_NAMES.index(task_type) if task_type in ACTION_NAMES else 0
+    instruction[0, type_idx] = 1.0
+
     total_reward = 0
     for step in range(max_steps):
         with torch.no_grad():
-            screen_t = torch.tensor(screen, dtype=torch.float32).unsqueeze(0)
-            dom_elem_t = torch.tensor(dom_elements, dtype=torch.float32).unsqueeze(0)
-            dom_layout_t = torch.tensor(dom_layout, dtype=torch.float32).unsqueeze(0)
+            screen_t = torch.tensor(obs.screen, dtype=torch.float32).unsqueeze(0) if hasattr(obs, 'screen') else torch.randn(1, 4, 14, 14)
+            dom_elem_t = torch.tensor(obs.dom_elements, dtype=torch.float32).unsqueeze(0) if hasattr(obs, 'dom_elements') else torch.randn(1, 16, 12)
+            dom_layout_t = torch.tensor(obs.dom_layout, dtype=torch.float32).unsqueeze(0) if hasattr(obs, 'dom_layout') else torch.randn(1, 16, 4)
 
             outputs = model(screen_t, dom_elem_t, dom_layout_t, instruction, external_t=step)
 
-        # Decode action
         action_logits = outputs["action_logits"]
         action_idx = action_logits.argmax(dim=-1).item()
         action_name = ACTION_NAMES[min(action_idx, len(ACTION_NAMES) - 1)]
@@ -158,26 +145,14 @@ def run_rollout_with_recording(model, env, task, max_steps=8):
         target_x = float(coord_pred[0, 0].clamp(0, 1))
         target_y = float(coord_pred[0, 1].clamp(0, 1))
 
-        text_pred = outputs.get("text_pred", None)
-        text = ""
-        if text_pred is not None and action_name == "type":
-            text = "hello"  # simplified
+        text = "hello" if action_name == "type" else ""
 
-        # Execute action
-        action = {
-            "type": action_idx,
-            "x": target_x,
-            "y": target_y,
-            "text": text,
-        }
+        action = {"type": action_idx, "x": target_x, "y": target_y, "text": text}
         obs, reward, done, info = env.step(action)
         total_reward += reward
-        screen = obs["screen"]
-        dom_elements = obs["dom_elements"]
-        dom_layout = obs["dom_layout"]
 
         frames.append({
-            "title": f"Step {step+1}: {action_name} ({target_x:.2f}, {target_y:.2f})",
+            "title": "Step {}: {} ({:.2f}, {:.2f})".format(step+1, action_name, target_x, target_y),
             "action_name": action_name,
             "target_x": target_x,
             "target_y": target_y,
@@ -204,8 +179,7 @@ def create_rollout_gif(model, n_episodes=6, output_path=None):
 
     all_rollouts = []
     for i, ttype in enumerate(task_types[:n_episodes]):
-        task = env.sample_task(task_type=ttype)
-        frames, reward = run_rollout_with_recording(model, env, task)
+        frames, reward = run_rollout_with_recording(model, env, task_type=ttype)
         all_rollouts.append({
             "frames": frames,
             "reward": reward,
