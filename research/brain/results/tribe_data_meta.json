@@ -1,0 +1,40 @@
+{
+  "n_samples": 72,
+  "n_categories": 9,
+  "categories": [
+    "animal",
+    "danger",
+    "emotion",
+    "language",
+    "motor",
+    "music",
+    "social",
+    "spatial",
+    "visual"
+  ],
+  "regions": [
+    "prediction_error",
+    "visual",
+    "visual.v1",
+    "visual.v2_v4",
+    "visual.fusiform",
+    "auditory",
+    "auditory.a1",
+    "auditory.wernicke",
+    "language",
+    "language.broca",
+    "language.angular",
+    "language.temporal_mid",
+    "frontal",
+    "frontal.prefrontal",
+    "frontal.motor",
+    "frontal.premotor",
+    "default_mode",
+    "default_mode.precuneus",
+    "default_mode.cingulate",
+    "default_mode.temporal_pole",
+    "subcortical",
+    "subcortical.insula",
+    "subcortical.somatosensory"
+  ]
+}
