@@ -3,27 +3,27 @@
     "n_params": 24518,
     "n_regions": 51,
     "n_connections": 189,
-    "train_time": 22.073620319366455,
-    "final_imitation_loss": 0.4811874954931198,
-    "final_selfplay_reward": -643.7928186769681,
-    "final_collisions": 78.0
+    "train_time": 3157.2122328281403,
+    "final_imitation_loss": 0.4820359204059992,
+    "final_selfplay_reward": -1999.067666599599,
+    "final_collisions": 386.0
   },
   "dense": {
     "n_params": 24518,
     "n_regions": 51,
     "n_connections": 321,
-    "train_time": 36.14742469787598,
-    "final_imitation_loss": 0.48102793385905607,
-    "final_selfplay_reward": -624.2965734828102,
-    "final_collisions": 67.0
+    "train_time": 3851.586609363556,
+    "final_imitation_loss": 0.4820387560205582,
+    "final_selfplay_reward": -2010.9484396210141,
+    "final_collisions": 366.0
   },
   "independent": {
     "n_params": 24518,
     "n_regions": 51,
     "n_connections": 177,
-    "train_time": 20.37687587738037,
-    "final_imitation_loss": 0.4809973624444777,
-    "final_selfplay_reward": -621.9198395024362,
-    "final_collisions": 68.0
+    "train_time": 2218.452785253525,
+    "final_imitation_loss": 0.4820443986891172,
+    "final_selfplay_reward": -2014.0838598419962,
+    "final_collisions": 407.0
   }
 }

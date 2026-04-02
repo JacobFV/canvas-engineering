@@ -1,17 +1,17 @@
 {
   "canvas": {
-    "final_formation_error": 1.694409209393666,
-    "mean_collisions": 40.333333333333336,
-    "mean_reward": -717.6425121697612
+    "final_formation_error": 1.8610086824304612,
+    "mean_collisions": 233.2,
+    "mean_reward": -4784.042330743178
   },
   "dense": {
-    "final_formation_error": 1.6979766539365742,
-    "mean_collisions": 40.333333333333336,
-    "mean_reward": -718.2131109352148
+    "final_formation_error": 1.8612452459824156,
+    "mean_collisions": 233.2,
+    "mean_reward": -4784.354910392102
   },
   "independent": {
-    "final_formation_error": 1.6967663199672096,
-    "mean_collisions": 40.333333333333336,
-    "mean_reward": -718.0621307627656
+    "final_formation_error": 1.8806142585208394,
+    "mean_collisions": 233.4,
+    "mean_reward": -4795.951742926458
   }
 }
