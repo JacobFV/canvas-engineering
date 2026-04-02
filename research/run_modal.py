@@ -1,21 +1,25 @@
-"""Run all research tracks on Modal.
+"""Run research tracks on Modal with persistent result storage.
 
-Each track uses a proper script file — no inline Python, no escape issues.
+Results are saved to a Modal Volume so they survive detached runs.
+Use --detach for long runs, then --collect to download results.
 
 Usage:
-    modal run research/run_modal.py                    # all three
-    modal run research/run_modal.py --track brain      # TRIBE v2 on GPU
-    modal run research/run_modal.py --track robotics   # fleet simulation
-    modal run research/run_modal.py --track browser    # browser agent
+    modal run --detach research/run_modal.py --track brain     # launch (detached)
+    modal run --detach research/run_modal.py --track robotics  # launch (detached)
+    modal run research/run_modal.py --collect                  # download results
 """
 
 import modal
 import base64
 import io
+import os
 import tarfile
 from pathlib import Path
 
 app = modal.App("canvas-research")
+
+# Persistent volume for results
+results_vol = modal.Volume.from_name("canvas-research-results", create_if_missing=True)
 
 cpu_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -53,20 +57,14 @@ RESULTS_DIR = Path(__file__).parent
 
 
 def _run_script(script_path, label, env_extras=None):
-    """Run a Python script, streaming stdout, return output."""
-    import subprocess
-    import sys
-    import os
-
+    import subprocess, sys, os
     env = {**os.environ, "MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1"}
     if env_extras:
         env.update(env_extras)
-
     proc = subprocess.Popen(
         [sys.executable, "-u", script_path],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        cwd=str(Path(script_path).parent),
-        env=env,
+        cwd=str(Path(script_path).parent), env=env,
     )
     output = []
     for line in proc.stdout:
@@ -76,59 +74,114 @@ def _run_script(script_path, label, env_extras=None):
     return proc.returncode, "".join(output[-100:])
 
 
-def _tar_dir(path):
-    """Tar a directory, return base64."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for f in Path(path).rglob("*"):
-            if f.is_file() and f.stat().st_size < 100_000_000:
-                tar.add(str(f), arcname=str(f.relative_to(path)))
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode()
-
-
-def _untar(b64_data, dest):
-    """Untar base64 data to dest."""
-    tar_bytes = base64.b64decode(b64_data)
-    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
-        tar.extractall(path=dest, filter="data")
+def _copy_to_volume(local_dir, vol_dir):
+    """Copy local results to the Modal Volume."""
+    import shutil
+    for f in Path(local_dir).rglob("*"):
+        if f.is_file():
+            dest = Path(vol_dir) / f.relative_to(local_dir)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(f), str(dest))
+            print("  -> {}".format(dest))
 
 
 @app.function(
     image=brain_image, gpu="A10G", timeout=28800, cpu=4, memory=32768,
     secrets=[modal.Secret.from_name("huggingface-secret", environment_name="test-20260327")],
+    volumes={"/vol": results_vol},
 )
 def run_brain():
     """Brain track: TRIBE v2 data generation + training + evaluation."""
     import os
     os.makedirs("/root/research/brain/results", exist_ok=True)
     code, output = _run_script("/root/research/brain/run_tribe_pipeline.py", "brain")
-    return {"status": "ok" if code == 0 else "fail", "returncode": code,
-            "results_tar": _tar_dir("/root/research/brain/results")}
+    # Save to volume regardless of client connection
+    print("\nSaving results to volume...")
+    _copy_to_volume("/root/research/brain/results", "/vol/brain")
+    results_vol.commit()
+    print("Results saved to volume.")
+    return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
 
-@app.function(image=cpu_image, timeout=21600, cpu=8, memory=32768)
+@app.function(
+    image=cpu_image, timeout=28800, cpu=8, memory=32768,
+    volumes={"/vol": results_vol},
+)
 def run_robotics():
-    """Robotics track: full training with scaling analysis. 6hr timeout."""
+    """Robotics track: training with scaling. Saves to volume."""
     import os
     os.makedirs("/root/research/robotics/results", exist_ok=True)
     code, output = _run_script("/root/research/robotics/run.py", "robotics")
-    return {"status": "ok" if code == 0 else "fail", "returncode": code,
-            "results_tar": _tar_dir("/root/research/robotics/results")}
+    print("\nSaving results to volume...")
+    _copy_to_volume("/root/research/robotics/results", "/vol/robotics")
+    results_vol.commit()
+    print("Results saved to volume.")
+    return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
 
-@app.function(image=cpu_image, timeout=3600, cpu=8, memory=16384)
+@app.function(
+    image=cpu_image, timeout=7200, cpu=8, memory=16384,
+    volumes={"/vol": results_vol},
+)
 def run_browser():
-    """Browser track: training + evaluation."""
+    """Browser track: training + evaluation. Saves to volume."""
     import os
     os.makedirs("/root/research/browser/results", exist_ok=True)
     code, output = _run_script("/root/research/browser/run.py", "browser")
-    return {"status": "ok" if code == 0 else "fail", "returncode": code,
-            "results_tar": _tar_dir("/root/research/browser/results")}
+    print("\nSaving results to volume...")
+    _copy_to_volume("/root/research/browser/results", "/vol/browser")
+    results_vol.commit()
+    print("Results saved to volume.")
+    return {"status": "ok" if code == 0 else "fail", "returncode": code}
+
+
+@app.function(
+    image=modal.Image.debian_slim(python_version="3.12"),
+    volumes={"/vol": results_vol},
+)
+def collect_results():
+    """Download results from the volume."""
+    import tarfile, io, base64
+    results = {}
+    for track in ["brain", "robotics", "browser"]:
+        track_dir = Path("/vol") / track
+        if track_dir.exists():
+            files = list(track_dir.rglob("*"))
+            file_list = [f for f in files if f.is_file()]
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                for f in file_list:
+                    tar.add(str(f), arcname=str(f.relative_to(track_dir)))
+            buf.seek(0)
+            results[track] = {
+                "tar": base64.b64encode(buf.read()).decode(),
+                "files": [str(f.relative_to(track_dir)) for f in file_list],
+            }
+            print("{}: {} files".format(track, len(file_list)))
+        else:
+            print("{}: no results yet".format(track))
+    return results
 
 
 @app.local_entrypoint()
-def main(track: str = "all"):
+def main(track: str = "all", collect: bool = False):
+    if collect:
+        print("Collecting results from Modal Volume...")
+        results = collect_results.remote()
+        for track_name, data in results.items():
+            dest = RESULTS_DIR / track_name / "results"
+            dest.mkdir(parents=True, exist_ok=True)
+            tar_bytes = base64.b64decode(data["tar"])
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                tar.extractall(path=str(dest), filter="data")
+            print("  {}: {} files downloaded to {}".format(
+                track_name, len(data["files"]), dest))
+            for f in sorted(data["files"]):
+                fpath = dest / f
+                if fpath.exists():
+                    print("    {} ({}KB)".format(f, fpath.stat().st_size // 1024))
+        return
+
     tracks = []
     if track in ("all", "brain"):
         tracks.append(("brain", run_brain))
@@ -138,6 +191,9 @@ def main(track: str = "all"):
         tracks.append(("browser", run_browser))
 
     print("Launching {} track(s) on Modal...".format(len(tracks)))
+    print("Results will be saved to Modal Volume 'canvas-research-results'")
+    print("Use --collect to download results later.")
+
     futures = {name: fn.spawn() for name, fn in tracks}
 
     for name, future in futures.items():
@@ -147,17 +203,7 @@ def main(track: str = "all"):
         try:
             result = future.get()
             print("  Status: {}".format(result["status"]))
-            print("  Return code: {}".format(result["returncode"]))
-            if result.get("results_tar"):
-                dest = RESULTS_DIR / name / "results"
-                dest.mkdir(parents=True, exist_ok=True)
-                _untar(result["results_tar"], str(dest))
-                files = [f for f in dest.rglob("*") if f.is_file()]
-                print("  Downloaded {} files:".format(len(files)))
-                for f in sorted(files):
-                    print("    {} ({}KB)".format(
-                        f.relative_to(dest), f.stat().st_size // 1024))
         except Exception as e:
             print("  ERROR: {}".format(e))
 
-    print("\nDone.")
+    print("\nDone. Use --collect to download results.")
