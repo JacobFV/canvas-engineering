@@ -37,10 +37,10 @@ def main():
                        help="Number of robots (default: 4)")
     parser.add_argument("--d_model", type=int, default=64,
                        help="Model dimension (default: 64)")
-    parser.add_argument("--imitation_epochs", type=int, default=20,
-                       help="Imitation learning epochs (default: 20)")
-    parser.add_argument("--selfplay_episodes", type=int, default=30,
-                       help="Self-play episodes (default: 30)")
+    parser.add_argument("--imitation_epochs", type=int, default=10,
+                       help="Imitation learning epochs (default: 10)")
+    parser.add_argument("--selfplay_episodes", type=int, default=10,
+                       help="Self-play episodes (default: 10)")
     parser.add_argument("--eval_episodes", type=int, default=10,
                        help="Evaluation episodes (default: 10)")
     parser.add_argument("--no-scaling", action="store_true",
