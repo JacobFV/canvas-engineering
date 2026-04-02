@@ -92,14 +92,14 @@ def _copy_to_volume(local_dir, vol_dir):
 )
 def run_brain():
     """Brain track: TRIBE v2 data generation + training + evaluation."""
-    import os
-    os.makedirs("/root/research/brain/results", exist_ok=True)
+    import os, subprocess
+    # Symlink results dir to volume so every write persists immediately
+    os.makedirs("/vol/brain", exist_ok=True)
+    if os.path.exists("/root/research/brain/results"):
+        subprocess.run(["rm", "-rf", "/root/research/brain/results"])
+    os.symlink("/vol/brain", "/root/research/brain/results")
     code, output = _run_script("/root/research/brain/run_tribe_pipeline.py", "brain")
-    # Save to volume regardless of client connection
-    print("\nSaving results to volume...")
-    _copy_to_volume("/root/research/brain/results", "/vol/brain")
     results_vol.commit()
-    print("Results saved to volume.")
     return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
 
@@ -109,13 +109,13 @@ def run_brain():
 )
 def run_robotics():
     """Robotics track: training with scaling. Saves to volume."""
-    import os
-    os.makedirs("/root/research/robotics/results", exist_ok=True)
+    import os, subprocess
+    os.makedirs("/vol/robotics", exist_ok=True)
+    if os.path.exists("/root/research/robotics/results"):
+        subprocess.run(["rm", "-rf", "/root/research/robotics/results"])
+    os.symlink("/vol/robotics", "/root/research/robotics/results")
     code, output = _run_script("/root/research/robotics/run.py", "robotics")
-    print("\nSaving results to volume...")
-    _copy_to_volume("/root/research/robotics/results", "/vol/robotics")
     results_vol.commit()
-    print("Results saved to volume.")
     return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
 
@@ -125,13 +125,13 @@ def run_robotics():
 )
 def run_browser():
     """Browser track: training + evaluation. Saves to volume."""
-    import os
-    os.makedirs("/root/research/browser/results", exist_ok=True)
+    import os, subprocess
+    os.makedirs("/vol/browser", exist_ok=True)
+    if os.path.exists("/root/research/browser/results"):
+        subprocess.run(["rm", "-rf", "/root/research/browser/results"])
+    os.symlink("/vol/browser", "/root/research/browser/results")
     code, output = _run_script("/root/research/browser/run.py", "browser")
-    print("\nSaving results to volume...")
-    _copy_to_volume("/root/research/browser/results", "/vol/browser")
     results_vol.commit()
-    print("Results saved to volume.")
     return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
 
