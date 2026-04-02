@@ -98,7 +98,7 @@ def run_brain():
     if os.path.exists("/root/research/brain/results"):
         subprocess.run(["rm", "-rf", "/root/research/brain/results"])
     os.symlink("/vol/brain", "/root/research/brain/results")
-    code, output = _run_script("/root/research/brain/run_tribe_pipeline.py", "brain")
+    code, output = _run_script("/root/research/brain/run_dynamics_pipeline.py", "brain")
     results_vol.commit()
     return {"status": "ok" if code == 0 else "fail", "returncode": code}
 
