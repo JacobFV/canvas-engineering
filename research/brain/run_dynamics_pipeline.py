@@ -416,15 +416,22 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
                         nn.Dropout(0.1), nn.Linear(d_model * 4, d_model),
                     ))
                 self.output_proj = nn.Linear(d_model, 1)
+                self._capture_activations = False
+                self._captured = None
 
-            def forward(self, x):
+            def forward(self, x, capture=False):
                 # x: (B, window, n_features)
                 h = self.input_proj(x.transpose(1, 2))  # (B, n_features, d_model)
+                layer_activations = [h.detach().cpu().numpy()] if capture else None
                 for layer, norm, ffn in zip(self.layers, self.norms, self.ffns):
                     h2 = layer(h)
                     h = norm(h + h2)
                     h = h + ffn(h)
+                    if capture:
+                        layer_activations.append(h.detach().cpu().numpy())
                 out = self.output_proj(h).squeeze(-1)  # (B, n_features)
+                if capture:
+                    self._captured = layer_activations  # list of (B, n_features, d_model)
                 return out
 
         model = DynamicsTransformer()
@@ -437,6 +444,13 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
 
     history = {"train_loss": [], "val_loss": [], "val_r2": []}
     batch_size = min(64, len(X_tr))
+
+    # Activation snapshots: capture at these epochs for animation
+    snapshot_epochs = {0, 1, 2, 5, 10, 20, 50, 100, 150, 199}
+    # Use first 10 val samples as probe stimuli
+    n_probe = min(10, len(X_vl))
+    probe_X = X_vl[:n_probe]
+    activation_snapshots = {}  # epoch -> list of (n_probe, n_features, d_model) per layer
 
     for epoch in range(n_epochs):
         model.train()
@@ -455,10 +469,15 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
             val_pred = model(X_vl)
             val_loss = ((val_pred - Y_vl) ** 2).mean().item()
 
-            # R² score
             ss_res = ((val_pred - Y_vl) ** 2).sum().item()
             ss_tot = ((Y_vl - Y_vl.mean(dim=0)) ** 2).sum().item()
             r2 = 1 - ss_res / max(ss_tot, 1e-8)
+
+            # Capture activation snapshots at selected epochs
+            if epoch in snapshot_epochs and mode != "flat":
+                probe_t = torch.tensor(probe_X, dtype=torch.float32)
+                model(probe_t, capture=True)
+                activation_snapshots[epoch] = model._captured  # list of arrays
 
         history["train_loss"].append(loss.item())
         history["val_loss"].append(val_loss)
@@ -467,6 +486,26 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
         if epoch % 20 == 0 or epoch == n_epochs - 1:
             print("  [{}] Epoch {:3d}/{} | train {:.4f} | val {:.4f} | R² {:.4f}".format(
                 mode, epoch, n_epochs, loss.item(), val_loss, r2))
+
+        # Save checkpoint at snapshot epochs
+        if epoch in snapshot_epochs:
+            torch.save(model.state_dict(),
+                       "results/dynamics_checkpoint_{}_{}.pt".format(mode, epoch))
+
+    # Save all activation snapshots
+    if activation_snapshots:
+        snapshot_data = {}
+        for ep, layers in activation_snapshots.items():
+            for layer_idx, act in enumerate(layers):
+                snapshot_data["epoch{}_layer{}".format(ep, layer_idx)] = act
+        np.savez_compressed(
+            "results/activations_{}.npz".format(mode),
+            **snapshot_data,
+            snapshot_epochs=np.array(sorted(activation_snapshots.keys())),
+            n_layers=len(next(iter(activation_snapshots.values()))),
+        )
+        size_mb = os.path.getsize("results/activations_{}.npz".format(mode)) / 1e6
+        print("  Saved activations_{}.npz ({:.1f} MB)".format(mode, size_mb))
 
     return model, history, n_params
 
