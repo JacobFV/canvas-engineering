@@ -182,17 +182,69 @@ ROI_TO_CANVAS = {
 # ── Data generation: keep temporal dynamics ─────────────────────────
 
 def generate_temporal_data(tribe_model, roi_indices, canvas_region_names,
-                           max_stimuli=64, min_timesteps=3):
+                           max_stimuli=64, min_timesteps=3,
+                           features_per_roi=8):
     """Generate temporal ROI activation sequences from TRIBE v2.
 
+    Instead of 1 scalar per ROI (mean), extracts multiple features per ROI
+    by subsampling vertices evenly within each ROI. This increases the state
+    space dimensionality so the topology actually matters.
+
+    With 20 ROIs x 8 features = 160 dimensions (vs 23 with scalar means).
+    The attention routing between regions now operates on richer representations
+    where spatial structure within each ROI is preserved.
+
     Returns:
-        sequences: list of (T, n_regions) arrays — temporal activation per stimulus
+        sequences: list of (T, n_features) arrays — temporal activation per stimulus
         labels: category index per stimulus
         category_names: list of category names
+        feature_to_region: list mapping each feature index to its canvas region name
     """
     from cortical_canvas import STIMULUS_CATEGORIES
 
     cat_names = sorted(STIMULUS_CATEGORIES.keys())
+
+    # Build feature mapping: for each canvas region, pick evenly-spaced vertices
+    # This preserves spatial structure within ROIs
+    feature_map = []  # list of (canvas_region_name, vertex_indices_for_this_feature)
+    feature_to_region = []
+
+    # Deduplicate: multiple ROI names can map to the same canvas region
+    canvas_to_vertices = {}
+    for roi_name, vertex_idx in roi_indices.items():
+        canvas_name = ROI_TO_CANVAS.get(roi_name)
+        if canvas_name and canvas_name in canvas_region_names:
+            if canvas_name not in canvas_to_vertices:
+                canvas_to_vertices[canvas_name] = []
+            canvas_to_vertices[canvas_name].append(vertex_idx)
+
+    # Merge vertex arrays per canvas region
+    for canvas_name in canvas_to_vertices:
+        canvas_to_vertices[canvas_name] = np.concatenate(canvas_to_vertices[canvas_name])
+
+    # For each canvas region, subsample to features_per_roi evenly-spaced vertices
+    for canvas_name in canvas_region_names:
+        if canvas_name in canvas_to_vertices:
+            vertices = canvas_to_vertices[canvas_name]
+            n_verts = len(vertices)
+            k = min(features_per_roi, n_verts)
+            # Evenly spaced indices
+            subsample_idx = np.linspace(0, n_verts - 1, k, dtype=int)
+            for i in range(k):
+                # Each feature = mean of a small neighborhood around the subsampled vertex
+                center = subsample_idx[i]
+                neighborhood = vertices[max(0, center - 2):center + 3]
+                feature_map.append((canvas_name, neighborhood))
+                feature_to_region.append(canvas_name)
+        else:
+            # Region has no ROI mapping — add a single zero feature
+            feature_map.append((canvas_name, np.array([])))
+            feature_to_region.append(canvas_name)
+
+    n_features = len(feature_map)
+    print("  Feature mapping: {} features across {} regions ({} per ROI)".format(
+        n_features, len(canvas_region_names), features_per_roi))
+
     sequences = []
     labels = []
     stim_per_cat = max(1, max_stimuli // len(cat_names))
@@ -207,21 +259,18 @@ def generate_temporal_data(tribe_model, roi_indices, canvas_region_names,
                 print("    Skipping (only {} timesteps)".format(preds.shape[0]))
                 continue
 
-            # Map each timestep to ROI means → canvas region activations
             n_t = preds.shape[0]
-            region_seq = np.zeros((n_t, len(canvas_region_names)))
+            feature_seq = np.zeros((n_t, n_features))
 
             for t in range(n_t):
-                for roi_name, vertex_idx in roi_indices.items():
-                    canvas_name = ROI_TO_CANVAS.get(roi_name)
-                    if canvas_name and canvas_name in canvas_region_names:
-                        idx = canvas_region_names.index(canvas_name)
-                        region_seq[t, idx] += preds[t, vertex_idx].mean()
+                for f_idx, (canvas_name, vertex_idx) in enumerate(feature_map):
+                    if len(vertex_idx) > 0:
+                        feature_seq[t, f_idx] = preds[t, vertex_idx].mean()
 
-            sequences.append(region_seq)
+            sequences.append(feature_seq)
             labels.append(cat_idx)
 
-    return sequences, np.array(labels), cat_names
+    return sequences, np.array(labels), cat_names, feature_to_region
 
 
 # ── Training: next-timestep regional prediction ─────────────────────
@@ -251,14 +300,20 @@ def build_dynamics_dataset(sequences, window=3):
 
 def train_dynamics_model(X_train, Y_train, X_val, Y_val,
                          topology, canvas_region_names,
+                         feature_to_region=None,
                          mode="cortical", n_epochs=200, d_model=64,
                          n_heads=4, lr=1e-3):
     """Train a next-timestep prediction model.
 
     Three modes:
-    - cortical: uses the declared cortical topology for attention routing
-    - dense: fully connected attention
+    - cortical: uses the declared cortical topology for attention routing.
+      Each feature position can only attend to features in connected regions.
+    - dense: fully connected attention (all features see all features)
     - flat: MLP (no attention structure)
+
+    When feature_to_region is provided, builds a per-feature dispatch layout
+    where the topology operates at the feature level: features in region A
+    attend to features in region B only if A→B exists in the topology.
     """
     import torch
     import torch.nn as nn
@@ -266,39 +321,83 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
     from canvas_engineering.dispatch import AttentionDispatcher
 
     torch.manual_seed(42)
-    n_regions = X_train.shape[2]
+    n_features = X_train.shape[2]
     window = X_train.shape[1]
 
-    # Convert to tensors
     X_tr = torch.tensor(X_train, dtype=torch.float32)
     Y_tr = torch.tensor(Y_train, dtype=torch.float32)
     X_vl = torch.tensor(X_val, dtype=torch.float32)
     Y_vl = torch.tensor(Y_val, dtype=torch.float32)
 
     if mode == "flat":
+        # Scale MLP to match the increased feature space
+        hidden = max(d_model * 2, n_features * 2)
         model = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(window * n_regions, d_model * 2),
+            nn.Linear(window * n_features, hidden),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model * 2, d_model * 2),
+            nn.Linear(hidden, hidden),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model * 2, n_regions),
+            nn.Linear(hidden, n_features),
         )
     else:
-        # Build dispatch layout: 1 position per region
-        dispatch_regions = {}
-        for i, name in enumerate(canvas_region_names):
-            dispatch_regions[name] = RegionSpec(bounds=(0, 1, i, i + 1, 0, 1))
-        dispatch_layout = CanvasLayout(
-            T=1, H=n_regions, W=1, d_model=d_model, regions=dispatch_regions,
-        )
+        # Build per-feature dispatch layout
+        # Each feature gets its own position. Features are grouped by region.
+        # The topology constrains which region-groups can attend to each other.
+        if feature_to_region is not None:
+            # Group features by region
+            region_features = {}
+            for f_idx, region_name in enumerate(feature_to_region):
+                if region_name not in region_features:
+                    region_features[region_name] = []
+                region_features[region_name].append(f_idx)
 
-        if mode == "cortical":
-            topo = topology
-        else:  # dense
-            topo = CanvasTopology.dense(canvas_region_names)
+            # Build layout: each feature = 1 position
+            dispatch_regions = {}
+            for i in range(n_features):
+                fname = "f{}".format(i)
+                dispatch_regions[fname] = RegionSpec(bounds=(0, 1, i, i + 1, 0, 1))
+            dispatch_layout = CanvasLayout(
+                T=1, H=n_features, W=1, d_model=d_model, regions=dispatch_regions,
+            )
+
+            # Build topology at feature level from region-level topology
+            if mode == "cortical":
+                # Get which region pairs are connected
+                connected_pairs = set()
+                for c in topology.connections:
+                    connected_pairs.add((c.src, c.dst))
+
+                feature_conns = []
+                for r1, feats1 in region_features.items():
+                    for r2, feats2 in region_features.items():
+                        if (r1, r2) in connected_pairs:
+                            # All features in r1 attend to all features in r2
+                            for f1 in feats1:
+                                for f2 in feats2:
+                                    feature_conns.append(
+                                        Connection(src="f{}".format(f1), dst="f{}".format(f2)))
+                topo = CanvasTopology(connections=feature_conns)
+            else:  # dense
+                feature_names = ["f{}".format(i) for i in range(n_features)]
+                topo = CanvasTopology.dense(feature_names)
+        else:
+            # Fallback: 1 position per region (old behavior)
+            dispatch_regions = {}
+            for i, name in enumerate(canvas_region_names):
+                dispatch_regions[name] = RegionSpec(bounds=(0, 1, i, i + 1, 0, 1))
+            dispatch_layout = CanvasLayout(
+                T=1, H=n_features, W=1, d_model=d_model, regions=dispatch_regions,
+            )
+            topo = topology if mode == "cortical" else CanvasTopology.dense(canvas_region_names)
+
+        n_conns = len(topo.connections)
+        n_possible = n_features * n_features
+        density = n_conns / max(n_possible, 1)
+        print("  Topology: {} connections / {} possible ({:.1%} density)".format(
+            n_conns, n_possible, density))
 
         class DynamicsTransformer(nn.Module):
             def __init__(self):
@@ -319,14 +418,13 @@ def train_dynamics_model(X_train, Y_train, X_val, Y_val,
                 self.output_proj = nn.Linear(d_model, 1)
 
             def forward(self, x):
-                # x: (B, window, n_regions)
-                # Transpose to (B, n_regions, window), project each region
-                h = self.input_proj(x.transpose(1, 2))  # (B, n_regions, d_model)
+                # x: (B, window, n_features)
+                h = self.input_proj(x.transpose(1, 2))  # (B, n_features, d_model)
                 for layer, norm, ffn in zip(self.layers, self.norms, self.ffns):
                     h2 = layer(h)
                     h = norm(h + h2)
                     h = h + ffn(h)
-                out = self.output_proj(h).squeeze(-1)  # (B, n_regions)
+                out = self.output_proj(h).squeeze(-1)  # (B, n_features)
                 return out
 
         model = DynamicsTransformer()
@@ -486,20 +584,23 @@ def main():
     canvas_region_names = list(bound.field_names)
     print("Canvas regions: {}".format(len(canvas_region_names)))
 
-    # Generate temporal sequences (use 72 stimuli for speed, 8 per category)
-    sequences, labels, cat_names = generate_temporal_data(
+    # Generate temporal sequences with multi-feature ROIs
+    # 8 features per ROI = ~160 total features (vs 23 scalars before)
+    sequences, labels, cat_names, feature_to_region = generate_temporal_data(
         tribe, roi_indices, canvas_region_names, max_stimuli=72,
+        features_per_roi=8,
     )
     print("\nGenerated {} temporal sequences".format(len(sequences)))
     lengths = [s.shape[0] for s in sequences]
     print("  Timesteps per sequence: min={}, max={}, mean={:.1f}".format(
         min(lengths), max(lengths), np.mean(lengths)))
     print("  Total timesteps: {}".format(sum(lengths)))
+    print("  Features per timestep: {}".format(sequences[0].shape[1]))
 
     # Build next-timestep prediction dataset
     window = 3
     X, Y, seq_ids = build_dynamics_dataset(sequences, window=window)
-    print("\nDynamics dataset: {} samples, window={}, {} regions".format(
+    print("\nDynamics dataset: {} samples, window={}, {} features".format(
         X.shape[0], window, X.shape[2]))
 
     # Train/val split (by sequence, not by sample)
@@ -519,11 +620,13 @@ def main():
     np.savez("results/dynamics_data.npz",
              X_train=X_train, Y_train=Y_train, X_val=X_val, Y_val=Y_val,
              canvas_region_names=canvas_region_names, labels=labels,
-             category_names=cat_names)
+             category_names=cat_names,
+             feature_to_region=feature_to_region)
 
     # Phase 2: Train all three models
     print("\n" + "=" * 60)
     print("PHASE 2: Train dynamics prediction models (200 epochs)")
+    print("  Features: {} (vs 23 in scalar mode)".format(X_train.shape[2]))
     print("=" * 60)
 
     topology = program.schema.topology
@@ -534,6 +637,7 @@ def main():
         model, history, n_params = train_dynamics_model(
             X_train, Y_train, X_val, Y_val,
             topology, canvas_region_names,
+            feature_to_region=feature_to_region,
             mode=mode, n_epochs=200, d_model=64,
         )
 
