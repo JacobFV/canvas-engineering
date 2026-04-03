@@ -92,8 +92,10 @@ def _copy_to_volume(local_dir, vol_dir):
 )
 def run_brain():
     """Brain track: TRIBE v2 data generation + training + evaluation."""
-    import os, subprocess
-    # Symlink results dir to volume so every write persists immediately
+    import os, subprocess, shutil
+    # Clear old results from volume and symlink
+    if os.path.exists("/vol/brain"):
+        shutil.rmtree("/vol/brain")
     os.makedirs("/vol/brain", exist_ok=True)
     if os.path.exists("/root/research/brain/results"):
         subprocess.run(["rm", "-rf", "/root/research/brain/results"])
