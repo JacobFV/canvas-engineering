@@ -106,7 +106,7 @@ def train():
 
     all_results = {}
 
-    for mode in ["cortical", "dense", "flat"]:
+    for mode in ["dense", "flat"]:  # cortical already done
         print("\n" + "=" * 60)
         print("Training: {} ({} features)".format(mode, n_features))
         print("=" * 60)
