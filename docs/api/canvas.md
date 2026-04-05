@@ -10,6 +10,8 @@ Core data structures for the spatiotemporal canvas.
 
 ::: canvas_engineering.canvas.CanvasLayout
 
+::: canvas_engineering.canvas.SinusoidalPositionalEncodingND
+
 ::: canvas_engineering.canvas.PeriodEmbedding
 
 ::: canvas_engineering.canvas.SpatiotemporalCanvas

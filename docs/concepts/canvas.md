@@ -1,12 +1,13 @@
 # The Canvas
 
-A **canvas** is a 3D grid `(T, H, W)` of `d_model`-dimensional vectors. Each modality occupies a named region. The diffusion process operates on "output" regions; "input" regions serve as conditioning context.
+A **canvas** is an N-dimensional grid `(T, *spatial_shape)` of `d_model`-dimensional vectors. `T` is the temporal axis; `spatial_shape` is an arbitrary tuple of spatial dimensions — `(W,)` for 1D, `(H, W)` for 2D, `(H, W, D)` for 3D, etc. Each modality occupies a named region. The diffusion process operates on "output" regions; "input" regions serve as conditioning context.
 
 ## CanvasLayout
 
 ```python
+# 2D spatial (the classic form):
 layout = CanvasLayout(
-    T=16, H=32, W=32, d_model=768,
+    T=16, spatial_shape=(32, 32), d_model=768,
     regions={
         "screen": (0, 16, 0, 24, 0, 24),         # raw tuple — defaults
         "mouse":  RegionSpec(bounds=(0, 16, 24, 26, 0, 4), loss_weight=2.0),
@@ -14,15 +15,24 @@ layout = CanvasLayout(
         "prompt": RegionSpec(bounds=(0, 1, 26, 28, 0, 4), is_output=False),
     },
 )
+
+# 1D spatial (time-series):
+layout_1d = CanvasLayout(T=8, spatial_shape=(128,), d_model=64, ...)
+
+# 3D spatial (volumetric):
+layout_3d = CanvasLayout(T=4, spatial_shape=(8, 8, 8), d_model=128, ...)
+
+# Backward-compatible H/W form (still works):
+layout = CanvasLayout(T=16, H=32, W=32, d_model=768, ...)
 ```
 
-Raw 6-tuples auto-wrap as `RegionSpec(bounds=tuple)` — full backward compatibility.
+Region bounds are flat tuples of length `2 + 2 * n_spatial_dims`: `(t0, t1, s0_lo, s0_hi, ...)`. Raw tuples auto-wrap as `RegionSpec(bounds=tuple)`.
 
 ## RegionSpec fields
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `bounds` | *(required)* | `(t0, t1, h0, h1, w0, w1)` spatial-temporal extent |
+| `bounds` | *(required)* | `(t0, t1, s0_lo, s0_hi, ...)` spatial-temporal extent |
 | `period` | `1` | Canvas frames per real-world update |
 | `is_output` | `True` | Participates in diffusion loss? |
 | `loss_weight` | `1.0` | Relative loss weight |
@@ -61,7 +71,7 @@ Fill resolution operates in **real-time space**: a slow region's canvas frames a
 
 The `SpatiotemporalCanvas` module manages the tensor with positional + modality + period embeddings:
 
-- **Positional encoding**: 3D sinusoidal, d_model split into thirds for (t, h, w)
+- **Positional encoding**: N-D sinusoidal, d_model split evenly across all dimensions (t, s0, s1, ...)
 - **Empty token**: Learned parameter for unoccupied positions
 - **Modality embeddings**: Learned per-region embedding added during `place()`
 - **Period embedding**: Learned embedding indexed by log-bucketed temporal period, summed into each position so the model knows its native update rate
@@ -69,7 +79,7 @@ The `SpatiotemporalCanvas` module manages the tensor with positional + modality 
 
 ```python
 canvas_mod = SpatiotemporalCanvas(layout)
-batch = canvas_mod.create_empty(4)           # (4, T*H*W, d_model)
+batch = canvas_mod.create_empty(4)           # (4, T*prod(spatial_shape), d_model)
 batch = canvas_mod.place(batch, embs, "visual")
 out = canvas_mod.extract(batch, "action")
 ```

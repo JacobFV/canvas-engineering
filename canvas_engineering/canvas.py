@@ -1,6 +1,8 @@
 """Spatiotemporal Canvas: the unified representation space.
 
-The canvas is a 3D grid (T, H, W) of d_model-dimensional vectors.
+The canvas is a grid of (T, *spatial_shape) d_model-dimensional vectors,
+where T is temporal and spatial_shape is an arbitrary tuple of spatial
+dimensions (e.g. (W,) for 1D, (H, W) for 2D, (H, W, D) for 3D).
 Each modality occupies designated regions. The diffusion process operates
 on "output" regions; "input" regions serve as conditioning context.
 """
@@ -10,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
+from itertools import product as _product
 from typing import Dict, List, Optional, Tuple, Union
 
 
@@ -18,7 +21,8 @@ class RegionSpec:
     """Declarative specification for a canvas region.
 
     Args:
-        bounds: (t0, t1, h0, h1, w0, w1) spatial-temporal extent.
+        bounds: Spatial-temporal extent as a flat tuple of (t0, t1, s0_lo, s0_hi, ...).
+            Length is 2 + 2 * n_spatial_dims. E.g. (t0, t1, h0, h1, w0, w1) for 2D.
         period: Canvas frames per real-world update (1 = every frame).
             A region with period=4 spanning t=0..3 maps to real frames 0,4,8,12.
         is_output: Whether this region participates in diffusion loss.
@@ -41,7 +45,7 @@ class RegionSpec:
             "filter" = predict/correct. "memory" = persistent lookup.
             "residual" = error traces.
     """
-    bounds: Tuple[int, int, int, int, int, int]
+    bounds: Tuple[int, ...]
     period: int = 1
     is_output: bool = True
     loss_weight: float = 1.0
@@ -149,38 +153,122 @@ def transfer_distance(a: RegionSpec, b: RegionSpec) -> float:
     return 1.0 - cos_sim
 
 
-def _get_bounds(region: Union[Tuple, RegionSpec]) -> Tuple[int, int, int, int, int, int]:
+def _get_bounds(region: Union[Tuple, RegionSpec]) -> Tuple[int, ...]:
     """Extract bounds from a raw tuple or RegionSpec."""
     if isinstance(region, RegionSpec):
         return region.bounds
     return region
 
 
+def _parse_bounds(
+    bounds: Tuple[int, ...], n_spatial: int,
+) -> Tuple[Tuple[int, int], Tuple[Tuple[int, int], ...]]:
+    """Parse flat bounds into temporal range and spatial ranges.
+
+    Returns ((t0, t1), ((s0_lo, s0_hi), (s1_lo, s1_hi), ...)).
+    """
+    expected = 2 + 2 * n_spatial
+    if len(bounds) != expected:
+        raise ValueError(
+            f"Bounds length {len(bounds)} != expected {expected} "
+            f"for {n_spatial} spatial dims"
+        )
+    t_range = (bounds[0], bounds[1])
+    spatial = tuple(
+        (bounds[2 + 2 * i], bounds[2 + 2 * i + 1]) for i in range(n_spatial)
+    )
+    return t_range, spatial
+
+
 @dataclass
 class CanvasLayout:
     """Declarative canvas geometry and modality region assignments.
 
-    Example:
+    The canvas is a (T, *spatial_shape) grid of d_model-dimensional vectors.
+    T is temporal; spatial_shape is an arbitrary tuple of spatial dimensions.
+
+    Examples:
+        # 2D spatial (classic):
         layout = CanvasLayout(
-            T=5, H=8, W=8, d_model=256,
+            T=5, spatial_shape=(8, 8), d_model=256,
             regions={
-                "visual": (0, 5, 0, 6, 0, 6),   # 5 frames of 6x6 patches
-                "action": (0, 5, 6, 7, 0, 1),    # per-frame actions
-                "reward": (2, 3, 7, 8, 0, 1),    # single reward slot
+                "visual": (0, 5, 0, 6, 0, 6),
+                "action": (0, 5, 6, 7, 0, 1),
             },
-            t_current=2,  # t >= 2 is "future" (diffusion output)
         )
+
+        # Backward-compatible H/W form:
+        layout = CanvasLayout(T=5, H=8, W=8, d_model=256, ...)
+
+        # 1D spatial:
+        layout = CanvasLayout(T=4, spatial_shape=(32,), d_model=64, ...)
+
+        # 3D spatial:
+        layout = CanvasLayout(T=2, spatial_shape=(4, 4, 4), d_model=128, ...)
     """
     T: int
-    H: int
-    W: int
     d_model: int
-    regions: Dict[str, Union[Tuple[int, int, int, int, int, int], RegionSpec]] = field(default_factory=dict)
+    spatial_shape: Tuple[int, ...] = ()
+    regions: Dict[str, Union[Tuple[int, ...], RegionSpec]] = field(default_factory=dict)
     t_current: int = 0
+    # Backward compat — converted to spatial_shape in __post_init__
+    H: Optional[int] = field(default=None, repr=False)
+    W: Optional[int] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.H is not None or self.W is not None:
+            if self.spatial_shape != ():
+                raise ValueError("Cannot specify both spatial_shape and H/W")
+            self.spatial_shape = (
+                self.H if self.H is not None else 1,
+                self.W if self.W is not None else 1,
+            )
+        if not self.spatial_shape:
+            raise ValueError("Must provide spatial_shape or H and W")
+        # Sync H/W from spatial_shape for backward compat reads
+        self.H = self.spatial_shape[0] if len(self.spatial_shape) >= 1 else None
+        self.W = self.spatial_shape[1] if len(self.spatial_shape) >= 2 else None
+
+    # -- Derived geometry ------------------------------------------------
+
+    @property
+    def n_spatial_dims(self) -> int:
+        """Number of spatial dimensions."""
+        return len(self.spatial_shape)
+
+    @property
+    def spatial_volume(self) -> int:
+        """Product of all spatial dimensions."""
+        return math.prod(self.spatial_shape)
 
     @property
     def num_positions(self) -> int:
-        return self.T * self.H * self.W
+        """Total canvas positions: T * prod(spatial_shape)."""
+        return self.T * self.spatial_volume
+
+    @property
+    def _strides(self) -> Tuple[int, ...]:
+        """Row-major strides for (T, s0, s1, ...) -> flat index.
+
+        Length = 1 + n_spatial_dims. strides[-1] is always 1.
+        """
+        strides: List[int] = []
+        acc = 1
+        for s in reversed(self.spatial_shape):
+            strides.append(acc)
+            acc *= s
+        strides.append(acc)  # temporal stride
+        return tuple(reversed(strides))
+
+    def flat_index(self, t: int, *spatial_coords: int) -> int:
+        """Compute flat index from (t, s0, s1, ...) coordinates."""
+        strides = self._strides
+        idx = t * strides[0]
+        for c, s in zip(spatial_coords, strides[1:]):
+            idx += c * s
+        return idx
+
+    # -- Region queries --------------------------------------------------
 
     def region_spec(self, name: str) -> RegionSpec:
         """Return the RegionSpec for a named region, wrapping raw tuples with defaults."""
@@ -189,22 +277,26 @@ class CanvasLayout:
             return r
         return RegionSpec(bounds=r)
 
-    def region_size(self, name: str) -> Tuple[int, int, int]:
-        t0, t1, h0, h1, w0, w1 = _get_bounds(self.regions[name])
-        return (t1 - t0, h1 - h0, w1 - w0)
+    def region_size(self, name: str) -> Tuple[int, ...]:
+        """(t_extent, s0_extent, s1_extent, ...) sizes for a named region."""
+        bounds = _get_bounds(self.regions[name])
+        (t0, t1), spatial = _parse_bounds(bounds, self.n_spatial_dims)
+        return (t1 - t0,) + tuple(hi - lo for lo, hi in spatial)
 
     def region_numel(self, name: str) -> int:
-        t, h, w = self.region_size(name)
-        return t * h * w
+        """Total positions in a named region."""
+        return math.prod(self.region_size(name))
 
     def region_indices(self, name: str) -> List[int]:
         """Flat indices for a named region."""
-        t0, t1, h0, h1, w0, w1 = _get_bounds(self.regions[name])
+        bounds = _get_bounds(self.regions[name])
+        (t0, t1), spatial = _parse_bounds(bounds, self.n_spatial_dims)
+        strides = self._strides
         indices = []
         for t in range(t0, t1):
-            for h in range(h0, h1):
-                for w in range(w0, w1):
-                    indices.append(t * (self.H * self.W) + h * self.W + w)
+            base = t * strides[0]
+            for coords in _product(*(range(lo, hi) for lo, hi in spatial)):
+                indices.append(base + sum(c * s for c, s in zip(coords, strides[1:])))
         return indices
 
     def region_indices_at_t(self, name: str, t_abs: int) -> List[int]:
@@ -212,13 +304,15 @@ class CanvasLayout:
 
         Returns empty list if t_abs is outside the region's temporal extent.
         """
-        t0, t1, h0, h1, w0, w1 = _get_bounds(self.regions[name])
+        bounds = _get_bounds(self.regions[name])
+        (t0, t1), spatial = _parse_bounds(bounds, self.n_spatial_dims)
         if t_abs < t0 or t_abs >= t1:
             return []
+        base = t_abs * self._strides[0]
+        strides = self._strides
         indices = []
-        for h in range(h0, h1):
-            for w in range(w0, w1):
-                indices.append(t_abs * (self.H * self.W) + h * self.W + w)
+        for coords in _product(*(range(lo, hi) for lo, hi in spatial)):
+            indices.append(base + sum(c * s for c, s in zip(coords, strides[1:])))
         return indices
 
     def region_timesteps(self, name: str) -> List[int]:
@@ -229,11 +323,12 @@ class CanvasLayout:
 
     def output_mask(self) -> List[int]:
         """Flat indices that are diffusion outputs (t >= t_current)."""
+        strides = self._strides
         indices = []
         for t in range(self.t_current, self.T):
-            for h in range(self.H):
-                for w in range(self.W):
-                    indices.append(t * (self.H * self.W) + h * self.W + w)
+            base = t * strides[0]
+            for coords in _product(*(range(s) for s in self.spatial_shape)):
+                indices.append(base + sum(c * s for c, s in zip(coords, strides[1:])))
         return indices
 
     def loss_weight_mask(self, device: Union[str, torch.device] = "cpu") -> torch.Tensor:
@@ -278,23 +373,30 @@ class CanvasLayout:
         return q
 
 
-class SinusoidalPositionalEncoding3D(nn.Module):
-    """3D sinusoidal positional encoding for (T, H, W) grid."""
+class SinusoidalPositionalEncodingND(nn.Module):
+    """N-dimensional sinusoidal positional encoding for (T, S0, S1, ...) grid.
 
-    def __init__(self, d_model: int, max_T: int = 32, max_H: int = 64, max_W: int = 64):
+    Splits d_model evenly across all dimensions (T + spatial), with any
+    remainder assigned to the last dimension.
+    """
+
+    def __init__(self, d_model: int, max_T: int = 32,
+                 max_spatial: Tuple[int, ...] = (64, 64)):
         super().__init__()
-        d_t = d_model // 3
-        d_h = d_model // 3
-        d_w = d_model - d_t - d_h
+        all_maxes = (max_T,) + tuple(max_spatial)
+        n_dims = len(all_maxes)
+        d_per = d_model // n_dims
+        dims_alloc = [d_per] * (n_dims - 1) + [d_model - d_per * (n_dims - 1)]
 
-        pe_t = self._make_1d(max_T, d_t)
-        pe_h = self._make_1d(max_H, d_h)
-        pe_w = self._make_1d(max_W, d_w)
-
-        pe = torch.zeros(max_T, max_H, max_W, d_model)
-        pe[:, :, :, :d_t] = pe_t[:, None, None, :]
-        pe[:, :, :, d_t:d_t + d_h] = pe_h[None, :, None, :]
-        pe[:, :, :, d_t + d_h:] = pe_w[None, None, :, :]
+        pe = torch.zeros(*all_maxes, d_model)
+        d_off = 0
+        for dim_idx, (max_len, d_alloc) in enumerate(zip(all_maxes, dims_alloc)):
+            pe_1d = self._make_1d(max_len, d_alloc)
+            view = [1] * (n_dims + 1)  # +1 for d_model dim
+            view[dim_idx] = max_len
+            view[-1] = d_alloc
+            pe[..., d_off:d_off + d_alloc] = pe_1d.view(*view)
+            d_off += d_alloc
         self.register_buffer("pe", pe)
 
     @staticmethod
@@ -307,8 +409,24 @@ class SinusoidalPositionalEncoding3D(nn.Module):
             pe[:, 1::2] = torch.cos(pos * div[: d // 2])
         return pe
 
-    def forward(self, T: int, H: int, W: int) -> torch.Tensor:
-        return self.pe[:T, :H, :W, :]
+    def forward(self, T: int, spatial_shape: Tuple[int, ...]) -> torch.Tensor:
+        """Return PE sliced to (T, *spatial_shape, d_model)."""
+        slices = (slice(T),) + tuple(slice(s) for s in spatial_shape) + (slice(None),)
+        return self.pe[slices]
+
+
+class SinusoidalPositionalEncoding3D(SinusoidalPositionalEncodingND):
+    """Backward-compatible 3D PE wrapper for (T, H, W) grid."""
+
+    def __init__(self, d_model: int, max_T: int = 32,
+                 max_H: int = 64, max_W: int = 64):
+        super().__init__(d_model, max_T=max_T, max_spatial=(max_H, max_W))
+
+    def forward(self, T: int, H: int = 0, W: int = 0,
+                spatial_shape: Optional[Tuple[int, ...]] = None) -> torch.Tensor:
+        if spatial_shape is not None:
+            return super().forward(T, spatial_shape)
+        return super().forward(T, (H, W))
 
 
 class PeriodEmbedding(nn.Module):
@@ -442,8 +560,8 @@ class SpatiotemporalCanvas(nn.Module):
         self.layout = layout
         self.semantic_conditioner = semantic_conditioner
         self._program = program
-        self.pos_enc = SinusoidalPositionalEncoding3D(
-            layout.d_model, max_T=layout.T, max_H=layout.H, max_W=layout.W
+        self.pos_enc = SinusoidalPositionalEncodingND(
+            layout.d_model, max_T=layout.T, max_spatial=layout.spatial_shape,
         )
         self.period_embedding = PeriodEmbedding(layout.d_model)
         self.empty_token = nn.Parameter(torch.randn(layout.d_model) * 0.02)
@@ -475,7 +593,7 @@ class SpatiotemporalCanvas(nn.Module):
         """
         L = self.layout
         canvas = self.empty_token.unsqueeze(0).unsqueeze(0).expand(batch_size, L.num_positions, L.d_model).clone()
-        pe = self.pos_enc(L.T, L.H, L.W).reshape(1, L.num_positions, L.d_model)
+        pe = self.pos_enc(L.T, L.spatial_shape).reshape(1, L.num_positions, L.d_model)
         canvas = canvas + pe
 
         # Sum period embedding for each region's positions

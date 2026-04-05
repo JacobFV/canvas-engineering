@@ -172,7 +172,8 @@ class ProgramCompiler:
             if name not in eliminated
         }
         reduced_layout = CanvasLayout(
-            T=layout.T, H=layout.H, W=layout.W, d_model=layout.d_model,
+            T=layout.T, spatial_shape=layout.spatial_shape,
+            d_model=layout.d_model,
             regions=active_regions, t_current=layout.t_current,
         )
         topology = CanvasTopology(connections=self._connections) if self._connections else None

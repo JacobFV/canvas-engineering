@@ -30,16 +30,17 @@ class CortexSpec:
 
     Args:
         name: Unique identifier for this cortex.
-        bounds: (t0, t1, h0, h1, w0, w1) spatial-temporal extent of the zone.
-        tile: (tile_h, tile_w) preferred tiling for local attention.
+        bounds: Spatial-temporal extent as flat tuple (t0, t1, s0_lo, s0_hi, ...).
+            Length = 2 + 2 * n_spatial_dims.
+        tile: Preferred tiling per spatial dimension. E.g. (4, 4) for 2D.
         local_backend: Attention backend for intra-cortex connections.
             Default "local_attention".
         shared_cache: Whether regions in this cortex share a KV cache
             during inference. Default True.
     """
     name: str
-    bounds: Tuple[int, int, int, int, int, int] = (0, 1, 0, 1, 0, 1)
-    tile: Tuple[int, int] = (4, 4)
+    bounds: Tuple[int, ...] = (0, 1, 0, 1, 0, 1)
+    tile: Tuple[int, ...] = (4, 4)
     local_backend: str = "local_attention"
     shared_cache: bool = True
 

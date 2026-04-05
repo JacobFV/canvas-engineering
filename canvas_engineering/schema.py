@@ -62,8 +62,7 @@ class CanvasSchema:
             "schema_version": self.version,
             "layout": {
                 "T": self.layout.T,
-                "H": self.layout.H,
-                "W": self.layout.W,
+                "spatial_shape": list(self.layout.spatial_shape),
                 "d_model": self.layout.d_model,
                 "t_current": self.layout.t_current,
             },
@@ -130,10 +129,17 @@ class CanvasSchema:
             else:
                 regions[name] = bounds
 
+        # Support both new (spatial_shape) and old (H/W) formats
+        if "spatial_shape" in layout_d:
+            spatial_shape = tuple(layout_d["spatial_shape"])
+        elif "H" in layout_d and "W" in layout_d:
+            spatial_shape = (layout_d["H"], layout_d["W"])
+        else:
+            raise ValueError("Layout must have 'spatial_shape' or 'H' and 'W'")
+
         layout = CanvasLayout(
             T=layout_d["T"],
-            H=layout_d["H"],
-            W=layout_d["W"],
+            spatial_shape=spatial_shape,
             d_model=layout_d["d_model"],
             regions=regions,
             t_current=layout_d.get("t_current", 0),

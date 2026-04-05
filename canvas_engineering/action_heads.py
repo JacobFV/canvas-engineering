@@ -28,13 +28,15 @@ class ActionHead(nn.Module):
     def forward(self, noise_pred: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            noise_pred: (B, T, C, H, W) or (B, C) predicted noise from diffusion model.
+            noise_pred: (B, T, C, *spatial) or (B, C) predicted noise.
+                Spatial can be any number of dims (H,W), (X,), (H,W,D), etc.
         Returns:
             actions: (B, action_dim) predicted actions.
         """
-        if noise_pred.dim() == 5:
-            # Average over spatial and temporal dims, keep channels
-            x = noise_pred.mean(dim=(1, 3, 4))  # (B, C)
+        if noise_pred.dim() >= 4:
+            # (B, T, C, *spatial) — average over T and all spatial dims
+            reduce_dims = (1,) + tuple(range(3, noise_pred.dim()))
+            x = noise_pred.mean(dim=reduce_dims)  # (B, C)
         elif noise_pred.dim() == 3:
             x = noise_pred.mean(dim=1)  # (B, C)
         else:

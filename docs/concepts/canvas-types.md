@@ -20,7 +20,7 @@ class Robot:
     joints: Field = Field(1, 8)                # 8 positions
     action: Field = Field(1, 8, loss_weight=2.0)
 
-bound = compile_schema(Robot(), T=8, H=16, W=16, d_model=256)  # (2)
+bound = compile_schema(Robot(), T=8, spatial_shape=(16, 16), d_model=256)  # (2)
 
 canvas = bound.build_canvas()                  # (3)
 batch = bound.create_batch(4)
@@ -28,7 +28,7 @@ bound["camera"].place(batch, camera_embs)      # (4)
 actions = bound["action"].extract(batch)
 ```
 
-1. **`Field(h, w)`** declares a region of h&times;w positions per timestep. Default `(1, 1)` = scalar.
+1. **`Field(h, w)`** declares a region of h&times;w positions per timestep (2D). Use `Field(spatial_shape=(n,))` for 1D or `Field(spatial_shape=(h, w, d))` for 3D. Default `(1, 1)` = scalar.
 2. **`compile_schema()`** walks the object tree, packs fields onto the grid, auto-wires connectivity.
 3. **`build_canvas()`** creates a `SpatiotemporalCanvas` with positional and modality embeddings.
 4. **`bound["name"]`** returns a `BoundField` for direct place/extract access.
@@ -39,7 +39,8 @@ actions = bound["action"].extract(batch)
 
 ```python
 Field(
-    h=1, w=1,              # spatial extent on the grid
+    h=1, w=1,              # 2D spatial extent (backward compat)
+    spatial_shape=None,    # N-D spatial extent, e.g. (8,) or (4,4,4)
     period=1,              # temporal frequency (frames per real-world update)
     is_output=True,        # participates in diffusion loss?
     loss_weight=1.0,       # relative gradient weight
@@ -49,7 +50,13 @@ Field(
 )
 ```
 
-Fields default to `(1, 1)` -- a single canvas position (scalar). This means `Field()` is the simplest possible declaration.
+Fields default to `(1, 1)` -- a single canvas position (scalar). For non-2D spatial layouts, use `spatial_shape`:
+
+```python
+Field(spatial_shape=(128,))       # 1D: 128 positions
+Field(spatial_shape=(4, 4, 4))    # 3D: 64 positions
+Field(8, 8)                       # 2D: 64 positions (classic form)
+```
 
 ### v2 process fields
 
@@ -94,7 +101,7 @@ class Fleet:
     robots: list = field(default_factory=list)
 
 fleet = Fleet(robots=[Robot(), Robot(), Robot()])
-bound = compile_schema(fleet, T=8, H=32, W=32, d_model=256)
+bound = compile_schema(fleet, T=8, spatial_shape=(32, 32), d_model=256)
 # Regions: "coordinator", "robots[0].sensor.camera", "robots[0].plan", ...
 ```
 

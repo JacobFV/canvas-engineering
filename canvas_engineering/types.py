@@ -23,6 +23,7 @@ Example:
     bound["camera"].place(batch, camera_embs)
 """
 
+import math
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -88,12 +89,17 @@ def _apply_operators(
 class Field:
     """A latent region declaration.
 
-    Declares a region of h x w positions on the canvas grid, each carrying
-    the canvas's d_model dimensionality. Default (1, 1) = scalar (1 position).
+    Declares a region of spatial_shape positions on the canvas grid, each
+    carrying the canvas's d_model dimensionality. Default (1, 1) = scalar
+    (1 position) for 2D spatial layouts.
+
+    For 2D, ``Field(h, w)`` is the standard form (backward compatible).
+    For arbitrary dimensions, use ``Field(spatial_shape=(8,))`` for 1D,
+    ``Field(spatial_shape=(4, 4, 4))`` for 3D, etc.
 
     Args:
-        h: Height on the canvas grid. Default 1.
-        w: Width on the canvas grid. Default 1.
+        h: Height on the canvas grid. Default 1. (2D compat)
+        w: Width on the canvas grid. Default 1. (2D compat)
         period: Canvas frames per real-world update (1 = every frame).
         is_output: Whether this field participates in diffusion loss.
         loss_weight: Relative loss weight for positions in this field.
@@ -105,6 +111,8 @@ class Field:
         tags: Semantic sub-tags within a family. E.g., ("belief", "object").
         carrier: Dynamics carrier. None = infer default ("deterministic").
             One of: deterministic, diffusive, filter, memory, residual.
+        spatial_shape: Arbitrary spatial dimensions, e.g. (8,) for 1D,
+            (4, 4, 4) for 3D. Mutually exclusive with h/w.
     """
     h: int = 1
     w: int = 1
@@ -117,11 +125,28 @@ class Field:
     family: Optional[str] = None
     tags: Tuple[str, ...] = ()
     carrier: Optional[str] = None
+    spatial_shape: Optional[Tuple[int, ...]] = None
+
+    def __post_init__(self):
+        if self.spatial_shape is not None:
+            # Explicit spatial_shape provided — h/w must be defaults
+            if self.h != 1 or self.w != 1:
+                raise ValueError(
+                    "Cannot specify both spatial_shape and non-default h/w"
+                )
+            # Backfill h/w from spatial_shape for compat reads
+            if len(self.spatial_shape) >= 1:
+                object.__setattr__(self, 'h', self.spatial_shape[0])
+            if len(self.spatial_shape) >= 2:
+                object.__setattr__(self, 'w', self.spatial_shape[1])
+        else:
+            # Derive spatial_shape from h/w (the 2D default path)
+            object.__setattr__(self, 'spatial_shape', (self.h, self.w))
 
     @property
     def num_positions(self) -> int:
-        """Spatial positions per timestep (h * w)."""
-        return self.h * self.w
+        """Spatial positions per timestep: prod(spatial_shape)."""
+        return math.prod(self.spatial_shape)
 
 
 # -- Layout Strategy --------------------------------------------------
@@ -427,68 +452,119 @@ def _auto_canvas_size(
     fields: List[Tuple[str, int, int]],
     pad: float = 1.15,
 ) -> Tuple[int, int]:
-    """Compute minimum (H, W) that can pack all fields.
+    """Compute minimum (H, W) that can pack all 2D fields.
 
-    Uses the same strip-packing algorithm as _pack_strip. Computes the
-    smallest roughly-square grid that fits everything, with a padding factor.
+    Thin wrapper around _auto_spatial_shape for backward compat.
+    """
+    nd_fields = [(p, (h, w)) for p, h, w in fields]
+    shape = _auto_spatial_shape(nd_fields, 2, pad)
+    return (shape[0], shape[1])
+
+
+def _auto_spatial_shape(
+    fields: List[Tuple[str, Tuple[int, ...]]],
+    n_dims: int,
+    pad: float = 1.15,
+) -> Tuple[int, ...]:
+    """Compute minimum spatial_shape that can pack all fields.
 
     Args:
-        fields: [(path, h, w), ...] from flattened field list.
+        fields: [(path, spatial_shape), ...] from flattened field list.
+        n_dims: Number of spatial dimensions (1, 2, 3, ...).
         pad: Padding factor (1.15 = 15% slack).
 
     Returns:
-        (H, W) tuple.
+        Spatial shape tuple of length n_dims.
     """
     if not fields:
-        return (4, 4)
+        return tuple(4 for _ in range(n_dims))
 
-    import math
+    if n_dims == 1:
+        total = sum(s[0] for _, s in fields)
+        return (int(math.ceil(total * pad)),)
 
-    max_w = max(w for _, _, w in fields)
-    max_h = max(h for _, h, _ in fields)
-    total_area = sum(h * w for _, h, w in fields)
+    if n_dims == 2:
+        # Existing sqrt-area strip-packing heuristic
+        max_w = max(s[1] for _, s in fields)
+        max_h = max(s[0] for _, s in fields)
+        total_area = sum(s[0] * s[1] for _, s in fields)
 
-    side = int(math.ceil(math.sqrt(total_area * pad)))
-    W = max(side, max_w)
+        side = int(math.ceil(math.sqrt(total_area * pad)))
+        W = max(side, max_w)
 
-    # Simulate strip packing to find needed H
-    row_h = 0
-    row_w = 0
-    row_max_h = 0
-    for _, h, w in fields:
-        if row_w + w > W:
-            row_h += row_max_h
-            row_w = 0
-            row_max_h = 0
-        row_w += w
-        row_max_h = max(row_max_h, h)
-    needed_H = row_h + row_max_h
-    H = max(int(math.ceil(needed_H * pad)), max_h)
-    return (H, W)
+        # Simulate strip packing to find needed H
+        row_h = 0
+        row_w = 0
+        row_max_h = 0
+        for _, s in fields:
+            h, w = s[0], s[1]
+            if row_w + w > W:
+                row_h += row_max_h
+                row_w = 0
+                row_max_h = 0
+            row_w += w
+            row_max_h = max(row_max_h, h)
+        needed_H = row_h + row_max_h
+        H = max(int(math.ceil(needed_H * pad)), max_h)
+        return (H, W)
+
+    # 3D+: nth-root of total volume, then validate with greedy packing
+    total_vol = sum(math.prod(s) for _, s in fields)
+    side = int(math.ceil(total_vol ** (1.0 / n_dims) * pad ** (1.0 / n_dims)))
+    # Ensure each dim is at least as large as the biggest field in that dim
+    shape = []
+    for d in range(n_dims):
+        max_d = max(s[d] for _, s in fields)
+        shape.append(max(side, max_d))
+    return tuple(shape)
 
 
 # -- Packing (Internal) -----------------------------------------------
 
-def _pack_strip(
-    fields: List[Tuple[str, int, int]],
-    H: int, W: int,
-) -> Dict[str, Tuple[int, int, int, int]]:
-    """Row-based strip packing: place fields left-to-right, top-to-bottom.
+def _pack_1d(
+    fields: List[Tuple[str, Tuple[int, ...]]],
+    spatial_shape: Tuple[int, ...],
+) -> Dict[str, Tuple[Tuple[int, int], ...]]:
+    """Linear 1D packing: stack fields end-to-end.
 
-    Returns dict of path -> (h0, h1, w0, w1).
+    Returns dict of path -> ((x0, x1),).
     """
+    size = spatial_shape[0]
+    placements = {}
+    offset = 0
+    for path, shape in fields:
+        w = shape[0]
+        if offset + w > size:
+            raise ValueError(
+                "Cannot pack '{}' (size {}): spatial dim {} exceeded at offset {}. "
+                "Need at least {}".format(path, w, size, offset, offset + w)
+            )
+        placements[path] = ((offset, offset + w),)
+        offset += w
+    return placements
+
+
+def _pack_2d(
+    fields: List[Tuple[str, Tuple[int, ...]]],
+    spatial_shape: Tuple[int, ...],
+) -> Dict[str, Tuple[Tuple[int, int], ...]]:
+    """Row-based 2D strip packing: place fields left-to-right, top-to-bottom.
+
+    Returns dict of path -> ((h0, h1), (w0, w1)).
+    """
+    H, W = spatial_shape[0], spatial_shape[1]
     placements = {}
     row_h = 0
     row_w = 0
     row_max_h = 0
 
-    for path, h, w in fields:
+    for path, shape in fields:
+        h, w = shape[0], shape[1]
         if w > W:
             raise ValueError(
                 "Field '{}' width {} exceeds canvas W={}".format(path, w, W)
             )
         if row_w + w > W:
-            # Start new row
             row_h += row_max_h
             row_w = 0
             row_max_h = 0
@@ -497,11 +573,66 @@ def _pack_strip(
                 "Cannot pack '{}' ({}x{}): grid H={} exceeded at row_h={}. "
                 "Need at least H={}".format(path, h, w, H, row_h, row_h + h)
             )
-        placements[path] = (row_h, row_h + h, row_w, row_w + w)
+        placements[path] = ((row_h, row_h + h), (row_w, row_w + w))
         row_w += w
         row_max_h = max(row_max_h, h)
 
     return placements
+
+
+def _pack_nd(
+    fields: List[Tuple[str, Tuple[int, ...]]],
+    spatial_shape: Tuple[int, ...],
+) -> Dict[str, Tuple[Tuple[int, int], ...]]:
+    """N-dimensional packing dispatcher.
+
+    - 1D: linear concatenation
+    - 2D: row-based strip packing
+    - 3D+: stack along dim-0, recursively pack remaining dims
+    """
+    n = len(spatial_shape)
+    if n == 1:
+        return _pack_1d(fields, spatial_shape)
+    if n == 2:
+        return _pack_2d(fields, spatial_shape)
+
+    # 3D+: stack along first dimension, pack (n-1)-D slices
+    dim0_size = spatial_shape[0]
+    sub_shape = spatial_shape[1:]
+    placements = {}
+    d0_offset = 0
+    for path, shape in fields:
+        d0_extent = shape[0]
+        if d0_offset + d0_extent > dim0_size:
+            raise ValueError(
+                "Cannot pack '{}' (dim0 size {}): spatial dim 0 = {} exceeded "
+                "at offset {}".format(path, d0_extent, dim0_size, d0_offset)
+            )
+        # Pack sub-dimensions at origin (each field gets its own slice)
+        sub_ranges = tuple((0, shape[i]) for i in range(1, len(shape)))
+        # Validate sub-dimensions fit
+        for i, (_, hi) in enumerate(sub_ranges):
+            if hi > sub_shape[i]:
+                raise ValueError(
+                    "Cannot pack '{}': dim {} size {} exceeds canvas "
+                    "dim {}".format(path, i + 1, hi, sub_shape[i])
+                )
+        placements[path] = ((d0_offset, d0_offset + d0_extent),) + sub_ranges
+        d0_offset += d0_extent
+    return placements
+
+
+def _pack_strip(
+    fields: List[Tuple[str, int, int]],
+    H: int, W: int,
+) -> Dict[str, Tuple[int, int, int, int]]:
+    """Row-based strip packing (backward-compat wrapper).
+
+    Returns dict of path -> (h0, h1, w0, w1).
+    """
+    nd_fields = [(p, (h, w)) for p, h, w in fields]
+    nd_result = _pack_2d(nd_fields, (H, W))
+    return {p: (r[0][0], r[0][1], r[1][0], r[1][1]) for p, r in nd_result.items()}
 
 
 def _pack_interleaved(
@@ -519,7 +650,6 @@ def _pack_interleaved(
     for path, h, w, local_name in fields:
         groups.setdefault(local_name, []).append((path, h, w))
 
-    # Flatten groups in order: all "thought" together, then all "goal", etc.
     ordered = []
     for group in groups.values():
         ordered.extend(group)
@@ -717,9 +847,12 @@ class BoundField:
 
     @property
     def num_positions(self) -> int:
-        """Total positions in this region (T_extent * h * w)."""
-        t0, t1, h0, h1, w0, w1 = self.spec.bounds
-        return (t1 - t0) * (h1 - h0) * (w1 - w0)
+        """Total positions in this region."""
+        bounds = self.spec.bounds
+        result = 1
+        for i in range(0, len(bounds), 2):
+            result *= bounds[i + 1] - bounds[i]
+        return result
 
     def place(self, batch: torch.Tensor, embeddings: torch.Tensor,
               canvas: Optional[SpatiotemporalCanvas] = None) -> torch.Tensor:
@@ -744,9 +877,14 @@ class BoundField:
         return self._schema.layout.region_indices(self.region_name)
 
     def __repr__(self) -> str:
-        t0, t1, h0, h1, w0, w1 = self.spec.bounds
-        return "BoundField('{}', t={}-{}, {}x{})".format(
-            self.region_name, t0, t1, h1 - h0, w1 - w0)
+        bounds = self.spec.bounds
+        t0, t1 = bounds[0], bounds[1]
+        spatial_extents = [
+            bounds[i + 1] - bounds[i] for i in range(2, len(bounds), 2)
+        ]
+        shape_str = "x".join(str(s) for s in spatial_extents)
+        return "BoundField('{}', t={}-{}, {})".format(
+            self.region_name, t0, t1, shape_str)
 
 
 class BoundSchema:
@@ -866,10 +1004,16 @@ class BoundSchema:
         lines = ["BoundSchema ({} fields, {} positions):".format(
             len(self._fields), self.layout.num_positions)]
         for name, bf in self._fields.items():
-            t0, t1, h0, h1, w0, w1 = bf.spec.bounds
+            bounds = bf.spec.bounds
+            t0, t1 = bounds[0], bounds[1]
             n = bf.num_positions
-            lines.append("  {} -> (t={}-{}, h={}-{}, w={}-{}) {}pos".format(
-                name, t0, t1, h0, h1, w0, w1, n))
+            # Format spatial bounds as dim_lo-dim_hi pairs
+            spatial_parts = []
+            for i in range(2, len(bounds), 2):
+                spatial_parts.append("{}-{}".format(bounds[i], bounds[i + 1]))
+            spatial_str = ", ".join(spatial_parts)
+            lines.append("  {} -> (t={}-{}, {}) {}pos".format(
+                name, t0, t1, spatial_str, n))
         if self.topology:
             lines.append("  {} connections".format(
                 len(self.topology.connections)))
@@ -885,47 +1029,43 @@ class BoundSchema:
 def compile_schema(
     root: Any,
     T: int = 1,
-    H: Optional[int] = None,
-    W: Optional[int] = None,
+    spatial_shape: Optional[Tuple[int, ...]] = None,
     d_model: int = 64,
     connectivity: Optional[ConnectivityPolicy] = None,
     layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
     t_current: int = 0,
+    # Backward compat — converted to spatial_shape
+    H: Optional[int] = None,
+    W: Optional[int] = None,
 ) -> BoundSchema:
     """Compile an object hierarchy into a BoundSchema.
 
-    Walks the object tree, finds Field attributes, packs them onto a (T, H, W)
-    grid, generates connectivity based on the type hierarchy, and returns a
-    BoundSchema wrapping the compiled CanvasSchema.
+    Walks the object tree, finds Field attributes, packs them onto a
+    (T, *spatial_shape) grid, generates connectivity based on the type
+    hierarchy, and returns a BoundSchema wrapping the compiled CanvasSchema.
 
     Works with dataclasses, Pydantic models, or plain objects.
 
-    When H and/or W are None, they are auto-computed from the declared field
-    dimensions -- like a C compiler sizing a struct from its members.
-
-    Every nested type and array element automatically gets a coarse-grained
-    field at its own path. Coarse-grained field size is configured on the types:
-      - ``__coarse__ = Field(h, w)`` on the child class
-      - ``metadata={"coarse": Field(h, w)}`` on the parent's field
-      - Falls back to Field(1, 1)
+    When spatial_shape is None (and H/W are also None), the spatial
+    dimensions are auto-computed from the declared field dimensions --
+    like a C compiler sizing a struct from its members.
 
     Args:
         root: Object with Field attributes. Lists create array regions.
         T: Temporal extent of the canvas. Default 1.
-        H: Height of the canvas grid. None = auto-sized.
-        W: Width of the canvas grid. None = auto-sized.
+        spatial_shape: Spatial dimensions, e.g. (16, 16) for 2D or (32,)
+            for 1D. None = auto-sized.
         d_model: Latent dimensionality per position. Default 64.
-        connectivity: Connectivity policy. Default: dense intra,
-            isolated arrays, dense temporal.
+        connectivity: Connectivity policy.
         layout_strategy: "packed" (default) or "interleaved".
         t_current: Timestep boundary for output mask.
+        H: (deprecated) Height. Use spatial_shape instead.
+        W: (deprecated) Width. Use spatial_shape instead.
 
     Returns:
         BoundSchema with compiled layout, topology, and bound field access.
 
     Example:
-        from dataclasses import dataclass
-
         @dataclass
         class Robot:
             camera: Field = Field(12, 12)
@@ -935,9 +1075,18 @@ def compile_schema(
         # Auto-sized canvas:
         bound = compile_schema(Robot(), T=8, d_model=256)
 
-        # Explicit canvas:
+        # Explicit 2D canvas:
+        bound = compile_schema(Robot(), T=8, spatial_shape=(16, 16), d_model=256)
+
+        # Backward-compat (H/W):
         bound = compile_schema(Robot(), T=8, H=16, W=16, d_model=256)
     """
+    # Resolve spatial_shape from H/W compat
+    if H is not None or W is not None:
+        if spatial_shape is not None:
+            raise ValueError("Cannot specify both spatial_shape and H/W")
+        # H/W path: both may be None (auto-sized below)
+
     if connectivity is None:
         connectivity = ConnectivityPolicy()
 
@@ -956,37 +1105,76 @@ def compile_schema(
     if not flat:
         raise ValueError("No Field attributes found in object tree")
 
-    # 2b. Auto-size canvas if H or W not specified
-    if H is None or W is None:
-        pack_dims = [(path, f.h, f.w) for path, f, _ in flat]
-        auto_H, auto_W = _auto_canvas_size(pack_dims)
-        if H is None:
-            H = auto_H
-        if W is None:
-            W = auto_W
+    # 2b. Determine spatial dimensions and n_dims
+    # Infer n_dims from fields or explicit spatial_shape
+    if spatial_shape is not None:
+        n_dims = len(spatial_shape)
+    elif H is not None or W is not None:
+        n_dims = 2
+    else:
+        # Infer from field spatial_shape — use max dimensionality across fields
+        n_dims = max(len(f.spatial_shape) for _, f, _ in flat)
+
+    # 2c. Auto-size spatial_shape if not fully specified
+    if spatial_shape is None:
+        if H is not None or W is not None:
+            # Legacy H/W path with auto-sizing
+            if H is None or W is None:
+                pack_dims = [(path, f.h, f.w) for path, f, _ in flat]
+                auto_H, auto_W = _auto_canvas_size(pack_dims)
+                if H is None:
+                    H = auto_H
+                if W is None:
+                    W = auto_W
+            spatial_shape = (H, W)
+        else:
+            # Full auto-size from field spatial_shapes
+            pack_fields = [(path, f.spatial_shape) for path, f, _ in flat]
+            # Pad field shapes to n_dims if needed (1-pad trailing dims)
+            padded = []
+            for path, s in pack_fields:
+                if len(s) < n_dims:
+                    s = s + (1,) * (n_dims - len(s))
+                padded.append((path, s))
+            spatial_shape = _auto_spatial_shape(padded, n_dims)
 
     # 3. Pack onto grid
-    if layout_strategy == LayoutStrategy.INTERLEAVED:
+    if n_dims == 2 and layout_strategy == LayoutStrategy.INTERLEAVED:
+        # Interleaved only supported for 2D
         pack_input = [(path, f.h, f.w, local) for path, f, local in flat]
-        hw_bounds = _pack_interleaved(pack_input, H, W)
+        hw_bounds = _pack_interleaved(pack_input, spatial_shape[0], spatial_shape[1])
+        # Convert to nd_bounds format
+        nd_bounds = {
+            p: ((b[0], b[1]), (b[2], b[3])) for p, b in hw_bounds.items()
+        }
     else:
-        pack_input = [(path, f.h, f.w) for path, f, _ in flat]
-        hw_bounds = _pack_strip(pack_input, H, W)
+        # N-D packing
+        pack_fields = [(path, f.spatial_shape) for path, f, _ in flat]
+        # Pad field shapes to n_dims
+        padded = []
+        for path, s in pack_fields:
+            if len(s) < n_dims:
+                s = s + (1,) * (n_dims - len(s))
+            padded.append((path, s))
+        nd_bounds = _pack_nd(padded, spatial_shape)
 
-    # 4. Build RegionSpecs with full bounds (t0, t1, h0, h1, w0, w1)
+    # 4. Build RegionSpecs with full bounds (t0, t1, s0_lo, s0_hi, ...)
     from canvas_engineering.semantic import auto_semantic_type
 
     field_map = {path: f for path, f, _ in flat}
     regions = {}  # type: Dict[str, Union[Tuple, RegionSpec]]
-    for path, (h0, h1, w0, w1) in hw_bounds.items():
+    for path, spatial_ranges in nd_bounds.items():
         f = field_map[path]
         t_extent = f.temporal_extent if f.temporal_extent is not None else T
         t_extent = min(t_extent, T)
-        # Auto-generate semantic_type from path if not explicitly set
         sem_type = f.semantic_type if f.semantic_type else auto_semantic_type(path)
         carrier = f.carrier if f.carrier else "deterministic"
+        # Flatten spatial ranges into bounds tuple: (t0, t1, s0_lo, s0_hi, ...)
+        flat_spatial = []
+        for lo, hi in spatial_ranges:
+            flat_spatial.extend([lo, hi])
         regions[path] = RegionSpec(
-            bounds=(0, t_extent, h0, h1, w0, w1),
+            bounds=(0, t_extent) + tuple(flat_spatial),
             period=f.period,
             is_output=f.is_output,
             loss_weight=f.loss_weight,
@@ -1002,7 +1190,7 @@ def compile_schema(
 
     # 6. Assemble
     layout = CanvasLayout(
-        T=T, H=H, W=W, d_model=d_model,
+        T=T, spatial_shape=spatial_shape, d_model=d_model,
         regions=regions,
         t_current=t_current,
     )
@@ -1017,12 +1205,14 @@ def compile_schema(
 def compile_program(
     root: Any,
     T: int = 1,
-    H: Optional[int] = None,
-    W: Optional[int] = None,
+    spatial_shape: Optional[Tuple[int, ...]] = None,
     d_model: int = 64,
     connectivity: Optional[ConnectivityPolicy] = None,
     layout_strategy: Union[str, LayoutStrategy] = LayoutStrategy.PACKED,
     t_current: int = 0,
+    # Backward compat
+    H: Optional[int] = None,
+    W: Optional[int] = None,
 ) -> Tuple["BoundSchema", "CanvasProgram"]:
     """Compile an object hierarchy into a BoundSchema + CanvasProgram.
 
@@ -1032,10 +1222,14 @@ def compile_program(
 
     Args:
         root: Object with Field attributes.
-        T, H, W, d_model: Canvas dimensions.
+        T: Temporal extent.
+        spatial_shape: Spatial dimensions. None = auto-sized.
+        d_model: Latent dimensionality.
         connectivity: Connectivity policy.
         layout_strategy: Packing strategy.
         t_current: Timestep boundary for output mask.
+        H: (deprecated) Use spatial_shape instead.
+        W: (deprecated) Use spatial_shape instead.
 
     Returns:
         (BoundSchema, CanvasProgram) tuple.
@@ -1052,12 +1246,13 @@ def compile_program(
     """
     from canvas_engineering.program import CanvasProgram, RegionProgram
 
-    # 1. Compile schema (unchanged)
+    # 1. Compile schema
     bound = compile_schema(
-        root, T=T, H=H, W=W, d_model=d_model,
+        root, T=T, spatial_shape=spatial_shape, d_model=d_model,
         connectivity=connectivity,
         layout_strategy=layout_strategy,
         t_current=t_current,
+        H=H, W=W,
     )
 
     # 2. Walk the type tree to extract Field → RegionProgram mapping

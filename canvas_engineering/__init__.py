@@ -11,7 +11,8 @@ Quick start:
 
 from canvas_engineering.canvas import (
     ATTENTION_TYPES, CanvasLayout, FamilyCarrierEmbedding, PeriodEmbedding,
-    RegionSpec, SpatiotemporalCanvas, transfer_distance,
+    RegionSpec, SinusoidalPositionalEncodingND, SpatiotemporalCanvas,
+    transfer_distance,
 )
 from canvas_engineering.looped_block import LoopedBlockWrapper
 from canvas_engineering.graft import graft_looped_blocks, freeze_full, freeze_half

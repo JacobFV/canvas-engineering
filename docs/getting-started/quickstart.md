@@ -39,7 +39,7 @@ That's it. The frozen 1.69B-parameter backbone now loops its computation 3 times
 from canvas_engineering import CanvasLayout, RegionSpec, SpatiotemporalCanvas
 
 layout = CanvasLayout(
-    T=5, H=8, W=8, d_model=256,
+    T=5, spatial_shape=(8, 8), d_model=256,
     regions={
         "visual":  (0, 5, 0, 6, 0, 6),    # 180 positions — video patches
         "action":  RegionSpec(
