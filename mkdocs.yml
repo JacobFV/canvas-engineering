@@ -89,6 +89,7 @@ nav:
     - "16: Memory Consolidation": examples/16-memory-consolidation.md
     - "17: Graph Parser": examples/17-graph-parser.md
     - "18: Sparse Reflection": examples/18-sparse-reflection.md
+    - "19: Cortical Dynamics": examples/19-cortical-dynamics.md
   - Design Recipes:
     - Robot Manipulation: recipes/robot.md
     - Computer Use Agent: recipes/computer-use.md
@@ -111,4 +112,6 @@ nav:
     - Canvas Types Spec: design/canvas-types-spec.md
   - Research:
     - Empirical Results: research/results.md
+    - Brain World Model: research/brain-world-model.md
+    - Session Log: research/session-log.md
     - The Type System Thesis: research/type-system.md

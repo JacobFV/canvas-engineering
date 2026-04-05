@@ -29,6 +29,12 @@ Runnable examples that train real models on canvas-structured data. Each example
 | **17** | [Graph Parser](17-graph-parser.md) | Operator types, fixpoint iteration | `operator`, `ClockExpr` IR |
 | **18** | [Sparse Reflection](18-sparse-reflection.md) | Uncertainty-driven self-reflection | `ConstraintSpec`, `LearnedScheduler` |
 
+## Research examples (real experiments with published results)
+
+| # | Example | What it demonstrates | Key result |
+|---|---------|---------------------|------------|
+| **19** | [Cortical Dynamics](19-cortical-dynamics.md) | Brain dynamics prediction with TRIBE v2 | R²=0.825, 23 regions, 42 cortical pathways |
+
 ## Running
 
 ```bash
