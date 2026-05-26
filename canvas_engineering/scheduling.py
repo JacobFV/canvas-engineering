@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 
 from canvas_engineering.program import CanvasProgram, ClockSpec
+from canvas_engineering.clock_ir import ClockContext
 
 
 class RegionScheduler:
@@ -146,6 +147,19 @@ class RegionScheduler:
         # Check cooldown
         if external_t < self._cooldown_until.get(region, 0):
             return False
+
+        # ClockExpr IR takes precedence over flat mode-based fields.
+        # Combinators (And/Or/Not) and decorators (Cooldown/MaxSilence) on
+        # the expression itself govern firing entirely.
+        if clock.expr is not None:
+            ctx = ClockContext(
+                external_t=external_t,
+                summaries=summaries,
+                boundary=boundary,
+                last_fired=self._last_fired.get(region, -1),
+                cooldown_until=self._cooldown_until.get(region, 0),
+            )
+            return bool(clock.expr.evaluate(ctx))
 
         # Check max_silence: force fire if silent too long
         if clock.max_silence is not None:
@@ -266,3 +280,103 @@ class LearnedScheduler(nn.Module):
     def __repr__(self) -> str:
         return "LearnedScheduler(n_regions={}, max_active={}, temperature={})".format(
             self.n_regions, self.max_active, self.temperature)
+
+
+# ── Hybrid scheduling ───────────────────────────────────────────────
+
+
+class HybridScheduler(nn.Module):
+    """Compose ``RegionScheduler`` (rule-based) with ``LearnedScheduler``.
+
+    Some regions fire according to declarative ``ClockSpec`` rules; others
+    are gated by a small learned MLP that scores them from residual
+    summaries. ``HybridScheduler`` produces a unified ``Set[str]`` of
+    region names to fire per step.
+
+    Args:
+        program: The ``CanvasProgram`` providing rule-based clocks.
+        learned_regions: Names of regions whose firing decisions are
+            taken by ``LearnedScheduler`` instead of their declared
+            ``ClockSpec``. If empty, behaves like ``RegionScheduler``.
+        summary_dim: Dimension of the flattened summary input that the
+            learned scheduler consumes.
+        max_active: Maximum number of learned-region activations per step.
+        temperature: Gumbel temperature for the learned scheduler.
+
+    Usage:
+        sched = HybridScheduler(program, learned_regions=["belief"],
+                                summary_dim=16, max_active=1)
+        active = sched.step(t, summaries={"err": {"prediction": 0.4}})
+        # -> active is a set of region names (rule-based ∪ learned)
+    """
+
+    def __init__(
+        self,
+        program: CanvasProgram,
+        learned_regions: Optional[List[str]] = None,
+        summary_dim: int = 0,
+        max_active: int = 1,
+        temperature: float = 1.0,
+    ):
+        super().__init__()
+        self.region_scheduler = RegionScheduler(program)
+        self._learned_names: List[str] = list(learned_regions or [])
+        self._learned_set: Set[str] = set(self._learned_names)
+        self._idx_to_name: Dict[int, str] = {
+            i: name for i, name in enumerate(self._learned_names)
+        }
+        if self._learned_names:
+            if summary_dim <= 0:
+                raise ValueError(
+                    "HybridScheduler requires summary_dim > 0 when "
+                    "learned_regions is non-empty"
+                )
+            self.learned_scheduler: Optional[LearnedScheduler] = LearnedScheduler(
+                n_regions=len(self._learned_names),
+                summary_dim=summary_dim,
+                max_active=max_active,
+                temperature=temperature,
+            )
+        else:
+            self.learned_scheduler = None
+
+    def step(
+        self,
+        external_t: int,
+        summaries: Optional[Dict[str, Dict[str, float]]] = None,
+        boundary: Optional[str] = None,
+        summary_tensor: Optional[torch.Tensor] = None,
+    ) -> Set[str]:
+        """Return the set of region names that fire this step.
+
+        Args:
+            external_t: Current external timestep.
+            summaries: Residual summaries (forwarded to RegionScheduler).
+            boundary: Optional boundary event name.
+            summary_tensor: Flat ``(summary_dim,)`` tensor consumed by the
+                learned scheduler. Required when ``learned_regions`` is
+                non-empty. If omitted while learned regions exist, the
+                learned regions simply don't fire this step.
+        """
+        rule_active = self.region_scheduler.step(external_t, summaries, boundary)
+        # Strip learned-controlled regions from the rule-based result —
+        # the learned scheduler has sole authority over those.
+        rule_active = rule_active - self._learned_set
+
+        if self.learned_scheduler is None or summary_tensor is None:
+            return rule_active
+
+        learned_idx, _logp = self.learned_scheduler(summary_tensor)
+        learned_active = {self._idx_to_name[i] for i in learned_idx
+                          if i in self._idx_to_name}
+        return rule_active | learned_active
+
+    def reset(self) -> None:
+        """Reset internal scheduling state (e.g., between episodes)."""
+        self.region_scheduler.reset()
+
+    def __repr__(self) -> str:
+        return "HybridScheduler(learned={}, rule={})".format(
+            len(self._learned_names),
+            len(self.region_scheduler._program.regions) - len(self._learned_names),
+        )
