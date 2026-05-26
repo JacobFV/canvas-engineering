@@ -45,6 +45,14 @@ for name, rp in program.regions.items():
 
 The `carrier` field on `Field` propagates to both `RegionSpec` (schema-level, for runtime dispatch) and `RegionProgram` (program-level, for auto-wiring). Diffusive carriers use noise injection during forward passes; filter carriers split attention into predict and correct phases.
 
+## Latest run (aarch64, 350 epochs)
+
+```
+Prediction MSE (diffusive): 0.0093
+Belief MSE (filter):        0.0615
+Final noise scale:          0.0003
+```
+
 ## What this shows
 
 - **`carrier` declarations** -- each region declares its physical dynamics independently of its family

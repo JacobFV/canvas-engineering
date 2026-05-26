@@ -12,7 +12,7 @@ The capstone. 70+ fields across 6 subsystems with hub-spoke connectivity. Cascad
 
 **Top left**: Canvas layout — six subsystems (life support, power, thermal, comms, ISRU, crew) with hub-spoke colony-level coordination.
 
-**Top right**: Failure prediction accuracy by subsystem — Greenhouse 100%, Life Support 66%, Power 59%, ISRU 50%, overall 90.4%.
+**Top right**: Failure prediction accuracy by subsystem — overall **alert accuracy 81.4%**, **failure detection 90.4%** (latest aarch64 run); per-subsystem MSE: harvest 3e-4, electrolysis 0.18, fuel 0.010.
 
 **Bottom left**: Cross-system correlations (learned) — heatmap shows the model discovers inter-subsystem dependencies, with strongest coupling between power and life support.
 

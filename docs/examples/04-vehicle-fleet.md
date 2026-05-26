@@ -73,9 +73,15 @@ Canvas: 25×24 = 600 positions. Isolated: 3,873 connections. Ring: 8,513. Dense:
 
 | Topology | ADE | FDE | Collision Rate |
 |----------|-----|-----|----------------|
-| Isolated | 1.32 | 2.75 | 23.8% |
-| Ring | 2.72 | 4.82 | 32.3% |
-| Dense | 4.57 | 7.73 | 92.0% |
+| Isolated | 1.47 | 2.76 | 26.8% |
+| Ring     | 1.43 | 2.77 | 26.2% |
+| Dense    | 1.45 | 2.72 | 26.3% |
+
+(Latest aarch64 run — 100 epochs, 64 vehicles, 4 traffic zones; ring and dense
+slightly improve over isolated on ADE/FDE with comparable collision rate. The
+isolated baseline is now much stronger than the earlier numbers because
+the wired dispatcher applies operator defaults to the per-zone edges
+even when the cross-vehicle topology is "isolated".)
 
 ## Run it
 

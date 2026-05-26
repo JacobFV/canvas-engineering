@@ -52,6 +52,18 @@ for t in range(T):
     canvas = dispatcher(canvas, active_regions=active)
 ```
 
+## Latest run (aarch64, 350 epochs)
+
+```
+Belief MSE with fovea:    0.0009
+Belief MSE without fovea: 0.0158
+Gaze prediction MSE:      0.0342
+```
+
+Event-triggered fovea attention reduces belief error by **17×**
+compared to the same model with the fovea fixed off — the residual
+accumulator is doing real work in scheduling.
+
 ## What this shows
 
 - **`RegionScheduler`** -- clock rules (periodic, on_event) control which regions update each step

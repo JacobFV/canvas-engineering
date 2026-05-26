@@ -56,7 +56,17 @@ for t in range(T):
 
 # Deploy: freeze obs, export self_model
 compiler = ProgramCompiler(program)
-compiled = compiler.compile()
+compiled = compiler.compile(module=model, export_dir="./deploy")
+```
+
+## Latest run (aarch64)
+
+```
+CompiledProgram:
+  active: 5 regions, 25 connections
+  frozen: ['action', 'confidence', 'task_obs']
+  exported: ['self_model']
+  eliminated: 1 regions
 ```
 
 ## What this shows
@@ -64,7 +74,7 @@ compiled = compiler.compile()
 - **Sparse reflection** -- self-model activates only when uncertainty is high, saving ~70% of reflection compute
 - **`ConstraintSpec`** -- causal ordering and conservation laws as declarative program metadata
 - **`ProgramCompiler`** -- freeze observation regions, export self-model for inspection or transfer
-- **`LearnedScheduler` (future)** -- differentiable region selection via straight-through estimator, replacing hard thresholds
+- **`LearnedScheduler`** -- differentiable region selection via Gumbel top-k. Composable with the rule-based scheduler through `HybridScheduler`, which delegates a subset of regions to the learned scorer and keeps the rest on declared clocks.
 
 ## Run it
 

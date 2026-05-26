@@ -12,9 +12,9 @@ Multi-timescale control with safety constraints. The disruption predictor (`loss
 
 **Top left**: Canvas layout with multi-rate diagnostic regions — magnetic at period=1, thermal at period=10, neutron at period=50, plus actuator and safety fields.
 
-**Top right**: Disruption prediction ROC (AUC=0.971) — the safety-weighted loss drives near-perfect disruption detection.
+**Top right**: Disruption prediction ROC (AUC=0.972) — the safety-weighted loss drives near-perfect disruption detection.
 
-**Bottom left**: Control response — predicted vs true coil currents (MSE=0.53), showing the actuator fields learn physically plausible control outputs.
+**Bottom left**: Control response — predicted vs true coil currents (MSE=0.53), with equilibrium MSE=0.34, showing the actuator fields learn physically plausible control outputs.
 
 **Bottom right**: Training curves — disruption loss drops fastest (10× weight), control loss follows, total loss stabilizes.
 

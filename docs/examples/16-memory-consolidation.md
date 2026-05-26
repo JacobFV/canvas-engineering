@@ -51,10 +51,26 @@ program.regions["semantic"] = RegionProgram(
 
 # After training: compile for deployment
 compiler = ProgramCompiler(program)
-compiled = compiler.compile()
-# compiled.exported_memories contains semantic memory as a tensor
-# compiled.active_regions no longer includes "semantic" or "episodic"
+compiled = compiler.compile(module=model, export_dir="./deploy")
+# compiled.exported_memories == {"semantic"}
+# compiled.frozen_regions   == {"episodic", "perception"}
+# compiled.active_regions   == {"working", "recall", ...}  # semantic removed
+# Files on disk: ./deploy/semantic.pt + ./deploy/semantic.pt.json
 ```
+
+## Latest run (aarch64)
+
+```
+CompiledProgram:
+  active: 4 regions, 16 connections
+  frozen: ['episodic', 'perception']
+  exported: ['semantic']
+  eliminated: 1 regions
+```
+
+The `compile()` call now actually freezes the live `episodic`/`perception`
+parameters, dumps `semantic.state_dict()` to disk, and removes it from
+the active graph — not just a stored tag.
 
 ## What this shows
 

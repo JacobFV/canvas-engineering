@@ -49,6 +49,17 @@ restored = CanvasProgram.from_dict(program_dict)
 assert restored.to_dict() == program_dict  # lossless round-trip
 ```
 
+## Latest run (aarch64, 400 epochs)
+
+```
+Span MSE: 0.0001
+Node MSE: 0.0001
+Per-iteration quality: ['0.0015', '0.0007', '0.0005', '0.0003', '0.0001']
+```
+
+Edge confidence sharpens monotonically across the five refinement
+steps (1.5e-3 → 1e-4), validating the fixpoint dynamics.
+
 ## What this shows
 
 - **Operator types** -- `observe`, `integrate`, `act` auto-wired from family pairs via `DEFAULT_WIRING`
