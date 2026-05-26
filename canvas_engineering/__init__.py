@@ -48,7 +48,9 @@ from canvas_engineering.attention import (
 from canvas_engineering.dispatch import AttentionDispatcher
 from canvas_engineering.learning import default_learning, FAMILY_DEFAULTS
 from canvas_engineering.compiler import ProgramCompiler, CompiledProgram
-from canvas_engineering.scheduling import RegionScheduler, LearnedScheduler
+from canvas_engineering.scheduling import (
+    RegionScheduler, LearnedScheduler, HybridScheduler,
+)
 from canvas_engineering.residuals import ResidualSpec, ResidualAccumulator
 from canvas_engineering.types import (
     Field, LayoutStrategy, ConnectivityPolicy,
@@ -57,7 +59,8 @@ from canvas_engineering.types import (
 from canvas_engineering.program import (
     CanvasProgram, RegionProgram, ConnectionProgram,
     ClockSpec, LearningSpec, ConstraintSpec,
-    validate_constraints,
+    validate_constraints, evaluate_trigger,
+    OPERATOR_DEFAULTS, resolve_operator_defaults,
     REGION_FAMILIES, CARRIERS, OPERATORS, WRITE_MODES, COMPILE_MODES,
 )
 from canvas_engineering.semantic import (
@@ -78,7 +81,7 @@ from canvas_engineering.masks import (
 from canvas_engineering.cortex import CortexSpec, CortexRegistry
 from canvas_engineering.identity import IdentitySpec, SlotBindingModule
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 __all__ = [
     "ATTENTION_TYPES",
     "CanvasLayout",
@@ -112,6 +115,7 @@ __all__ = [
     "LearningSpec",
     "ConstraintSpec",
     "validate_constraints",
+    "evaluate_trigger",
     "REGION_FAMILIES",
     "CARRIERS",
     "OPERATORS",
@@ -146,6 +150,9 @@ __all__ = [
     "ResidualAccumulator",
     "RegionScheduler",
     "LearnedScheduler",
+    "HybridScheduler",
+    "OPERATOR_DEFAULTS",
+    "resolve_operator_defaults",
     "default_learning",
     "FAMILY_DEFAULTS",
     "ProgramCompiler",

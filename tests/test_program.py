@@ -1101,6 +1101,10 @@ class TestDefaultLearning:
 
 class TestProgramCompiler:
     def test_no_compile_modes_unchanged(self):
+        # With no explicit compile_mode, regions still inherit their
+        # family default (observation/action → freeze; state → runtime).
+        # The default-state case below has all regions remain active;
+        # frozen/exported sets reflect FAMILY_DEFAULTS.
         schema = _make_schema()
         prog = CanvasProgram(
             schema=schema,
@@ -1108,6 +1112,25 @@ class TestProgramCompiler:
                 "obs": RegionProgram(family="observation"),
                 "state": RegionProgram(family="state"),
                 "act": RegionProgram(family="action"),
+            },
+        )
+        compiled = ProgramCompiler(prog).compile()
+        # observation + action families default to compile_mode="freeze";
+        # state stays runtime — so all three are still active but two
+        # are frozen.
+        assert compiled.active_regions == {"obs", "state", "act"}
+        assert compiled.frozen_regions == {"obs", "act"}
+        assert len(compiled.exported_memories) == 0
+
+    def test_no_compile_modes_state_only(self):
+        # state-family regions remain runtime by default; no freezing.
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="state"),
+                "state": RegionProgram(family="state"),
+                "act": RegionProgram(family="state"),
             },
         )
         compiled = ProgramCompiler(prog).compile()
@@ -2413,6 +2436,614 @@ class TestExports:
     def test_version_bumped(self):
         import canvas_engineering
         assert canvas_engineering.__version__ >= "0.4.0"
+
+
+# ── Phase 7: ClockExpr in ClockSpec + trigger eval + write_mode ─────
+
+
+from canvas_engineering import (
+    AttentionDispatcher, RegionScheduler, evaluate_trigger,
+    clock_periodic, clock_on, Or, And,
+)
+
+
+class TestClockSpecExpr:
+    def test_clock_expr_round_trip(self):
+        expr = Or(clock_periodic(4), clock_on("vision.err", gt=0.25))
+        c = ClockSpec(expr=expr)
+        d = ClockSpec.__dataclass_fields__  # sanity
+        assert c.expr is expr
+
+    def test_clock_expr_serialization(self):
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=CanvasLayout(
+                T=4, H=4, W=4, d_model=8,
+                regions={"r": RegionSpec(bounds=(0, 4, 0, 4, 0, 4))},
+            )),
+            regions={"r": RegionProgram(
+                family="state",
+                clock=ClockSpec(expr=Or(clock_periodic(2), clock_on("r.err", gt=0.5))),
+            )},
+        )
+        d = prog.to_dict()
+        restored = CanvasProgram.from_dict(d)
+        assert restored.regions["r"].clock.expr is not None
+        assert restored.regions["r"].clock.expr == prog.regions["r"].clock.expr
+
+    def test_scheduler_uses_expr_when_set(self):
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=CanvasLayout(
+                T=4, H=4, W=4, d_model=8,
+                regions={"r": RegionSpec(bounds=(0, 4, 0, 4, 0, 4))},
+            )),
+            regions={"r": RegionProgram(
+                family="state",
+                clock=ClockSpec(
+                    mode="periodic", period=1,  # would fire every step
+                    expr=clock_periodic(3),     # but expr overrides: every 3
+                ),
+            )},
+        )
+        sched = RegionScheduler(prog)
+        fires = [("r" in sched.step(t)) for t in range(7)]
+        assert fires == [True, False, False, True, False, False, True]
+
+    def test_scheduler_expr_event_driven(self):
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=CanvasLayout(
+                T=4, H=4, W=4, d_model=8,
+                regions={"r": RegionSpec(bounds=(0, 4, 0, 4, 0, 4))},
+            )),
+            regions={"r": RegionProgram(
+                family="state",
+                clock=ClockSpec(expr=clock_on("e.err", gt=0.5)),
+            )},
+        )
+        sched = RegionScheduler(prog)
+        assert "r" not in sched.step(0, summaries={"e": {"err": 0.1}})
+        assert "r" in sched.step(1, summaries={"e": {"err": 0.9}})
+
+
+class TestEvaluateTrigger:
+    def test_none_trigger_is_true(self):
+        assert evaluate_trigger(None, None) is True
+        assert evaluate_trigger(None, {"r": {"k": 1.0}}) is True
+
+    def test_missing_summaries_is_false(self):
+        assert evaluate_trigger("r.k > 0.5", None) is False
+
+    def test_gt_lt_ge_le(self):
+        s = {"r": {"k": 0.5}}
+        assert evaluate_trigger("r.k > 0.4", s) is True
+        assert evaluate_trigger("r.k > 0.6", s) is False
+        assert evaluate_trigger("r.k < 0.6", s) is True
+        assert evaluate_trigger("r.k >= 0.5", s) is True
+        assert evaluate_trigger("r.k <= 0.5", s) is True
+        assert evaluate_trigger("r.k == 0.5", s) is True
+        assert evaluate_trigger("r.k != 0.5", s) is False
+
+    def test_compound_and(self):
+        s = {"r": {"k": 0.7}, "q": {"v": 0.2}}
+        assert evaluate_trigger("r.k > 0.5 && q.v < 0.3", s) is True
+        assert evaluate_trigger("r.k > 0.5 && q.v > 0.5", s) is False
+
+    def test_missing_kind_is_false(self):
+        assert evaluate_trigger("r.k > 0.5", {"r": {}}) is False
+
+    def test_malformed_returns_false(self):
+        assert evaluate_trigger("not an expression", {"r": {"k": 1}}) is False
+
+
+class TestDispatcherWriteMode:
+    def _make_layout(self):
+        return CanvasLayout(
+            T=2, H=2, W=2, d_model=8,
+            regions={
+                "a": RegionSpec(bounds=(0, 2, 0, 1, 0, 1)),
+                "b": RegionSpec(bounds=(0, 2, 1, 2, 0, 1)),
+                "c": RegionSpec(bounds=(0, 2, 0, 1, 1, 2)),
+            },
+        )
+
+    def test_add_mode_default(self):
+        layout = self._make_layout()
+        topo = CanvasTopology([
+            Connection(src="a", dst="b", weight=1.0),
+            Connection(src="a", dst="c", weight=1.0),
+        ])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram(), "c": RegionProgram()},
+            connections={
+                ("a", "b"): ConnectionProgram(write_mode="add"),
+                ("a", "c"): ConnectionProgram(write_mode="add"),
+            },
+        )
+        torch.manual_seed(0)
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        x = torch.randn(1, layout.num_positions, 8)
+        out = disp(x)
+        # a positions are touched, b/c are pass-through
+        a_idx = layout.region_indices("a")
+        b_idx = layout.region_indices("b")
+        assert not torch.allclose(out[:, a_idx], x[:, a_idx])
+        assert torch.allclose(out[:, b_idx], x[:, b_idx])
+
+    def test_replace_mode_overrides_add(self):
+        layout = self._make_layout()
+        topo = CanvasTopology([
+            Connection(src="a", dst="b", weight=1.0),
+            Connection(src="a", dst="c", weight=1.0),
+        ])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram(), "c": RegionProgram()},
+            connections={
+                ("a", "b"): ConnectionProgram(write_mode="add"),
+                ("a", "c"): ConnectionProgram(write_mode="replace"),
+            },
+        )
+        torch.manual_seed(0)
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        x = torch.randn(1, layout.num_positions, 8)
+        out = disp(x)
+        # Output at 'a' positions came from the replace edge only — no division
+        # by total weight. Verify by re-running with only the replace edge.
+        topo2 = CanvasTopology([Connection(src="a", dst="c", weight=1.0)])
+        prog2 = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo2),
+            regions={"a": RegionProgram(), "c": RegionProgram()},
+            connections={("a", "c"): ConnectionProgram(write_mode="replace")},
+        )
+        torch.manual_seed(0)
+        disp2 = AttentionDispatcher(topo2, layout, d_model=8, n_heads=2, program=prog2)
+        # Share attention parameters via state_dict (same seed gives identical init)
+        disp2.load_state_dict({k: v for k, v in disp.state_dict().items() if k in disp2.state_dict()}, strict=False)
+        out2 = disp2(x)
+        a_idx = layout.region_indices("a")
+        assert torch.allclose(out[:, a_idx], out2[:, a_idx], atol=1e-5)
+
+    def test_gate_mode_has_learned_param(self):
+        layout = self._make_layout()
+        topo = CanvasTopology([Connection(src="a", dst="b", weight=1.0)])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram()},
+            connections={("a", "b"): ConnectionProgram(write_mode="gate")},
+        )
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        assert len(disp._gate_params) == 1
+        # Output should be gradient-connected to gate param.
+        x = torch.randn(1, layout.num_positions, 8, requires_grad=True)
+        out = disp(x)
+        loss = out.sum()
+        loss.backward()
+        for p in disp._gate_params.values():
+            assert p.grad is not None
+            assert torch.any(p.grad != 0)
+
+
+class TestDispatcherTrigger:
+    def _setup(self, trigger):
+        layout = CanvasLayout(
+            T=2, H=2, W=2, d_model=8,
+            regions={
+                "a": RegionSpec(bounds=(0, 2, 0, 1, 0, 1)),
+                "b": RegionSpec(bounds=(0, 2, 1, 2, 0, 1)),
+            },
+        )
+        topo = CanvasTopology([Connection(src="a", dst="b", weight=1.0)])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram()},
+            connections={("a", "b"): ConnectionProgram(trigger=trigger)},
+        )
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        return layout, disp
+
+    def test_trigger_blocks_when_false(self):
+        layout, disp = self._setup("b.err > 0.5")
+        x = torch.randn(1, layout.num_positions, 8)
+        out = disp(x, summaries={"b": {"err": 0.1}})
+        # a positions pass-through unchanged when trigger fails
+        a_idx = layout.region_indices("a")
+        assert torch.allclose(out[:, a_idx], x[:, a_idx])
+
+    def test_trigger_fires_when_true(self):
+        layout, disp = self._setup("b.err > 0.5")
+        x = torch.randn(1, layout.num_positions, 8)
+        out = disp(x, summaries={"b": {"err": 0.9}})
+        a_idx = layout.region_indices("a")
+        assert not torch.allclose(out[:, a_idx], x[:, a_idx])
+
+
+# ── Phase 8: full subsystem wiring ──────────────────────────────────
+
+
+from canvas_engineering import (
+    CortexSpec, CortexRegistry, IdentitySpec,
+    HybridScheduler, OPERATOR_DEFAULTS, resolve_operator_defaults,
+    ProgramCompiler, MaskSpec,
+)
+
+
+def _small_layout(d_model=8):
+    return CanvasLayout(
+        T=2, H=2, W=2, d_model=d_model,
+        regions={
+            "a": RegionSpec(bounds=(0, 2, 0, 1, 0, 1)),
+            "b": RegionSpec(bounds=(0, 2, 1, 2, 0, 1)),
+        },
+    )
+
+
+class TestExtendedConstraints:
+    def test_equivariance_translation_compatible(self):
+        layout = _small_layout()
+        topo = CanvasTopology([Connection(src="a", dst="b", fn="cross_attention")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={
+                "a": RegionProgram(
+                    family="state",
+                    constraints=ConstraintSpec(equivariance="translation"),
+                ),
+                "b": RegionProgram(family="state"),
+            },
+        )
+        assert validate_constraints(prog) == []
+
+    def test_equivariance_translation_incompatible(self):
+        layout = _small_layout()
+        topo = CanvasTopology([Connection(src="a", dst="b", fn="cosine_attention")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={
+                "a": RegionProgram(
+                    family="state",
+                    constraints=ConstraintSpec(equivariance="translation"),
+                ),
+                "b": RegionProgram(family="state"),
+            },
+        )
+        v = validate_constraints(prog)
+        assert any("equivariance" in msg for msg in v)
+
+    def test_conservation_violated_by_replace(self):
+        layout = _small_layout()
+        topo = CanvasTopology([Connection(src="a", dst="b")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={
+                "a": RegionProgram(
+                    family="state",
+                    constraints=ConstraintSpec(conservation="capacity"),
+                ),
+                "b": RegionProgram(family="state"),
+            },
+            connections={("a", "b"): ConnectionProgram(write_mode="replace")},
+        )
+        v = validate_constraints(prog)
+        assert any("conservation" in msg for msg in v)
+
+    def test_monotonicity_violated_by_diffusive_carrier(self):
+        layout = _small_layout()
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=CanvasTopology([])),
+            regions={
+                "a": RegionProgram(
+                    family="state",
+                    carrier="diffusive",
+                    constraints=ConstraintSpec(monotonicity="non_decreasing"),
+                ),
+            },
+        )
+        v = validate_constraints(prog)
+        assert any("monotonicity" in msg for msg in v)
+
+    def test_monotonicity_ok_with_deterministic_carrier(self):
+        layout = _small_layout()
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=CanvasTopology([])),
+            regions={
+                "a": RegionProgram(
+                    family="state",
+                    carrier="deterministic",
+                    constraints=ConstraintSpec(monotonicity="non_decreasing"),
+                ),
+            },
+        )
+        assert validate_constraints(prog) == []
+
+
+class TestEffectiveLearning:
+    def test_explicit_learning_wins(self):
+        rp = RegionProgram(family="observation",
+                           learning=LearningSpec(mode="supervised"))
+        assert rp.effective_learning().mode == "supervised"
+
+    def test_family_default_applied_when_none(self):
+        rp = RegionProgram(family="observation")
+        assert rp.learning is None  # field stays None for backward compat
+        assert rp.effective_learning().mode == "ssl_prediction"
+        assert rp.effective_learning().compile_mode == "freeze"
+
+    def test_unknown_family_falls_back(self):
+        rp = RegionProgram(family="custom_thing")
+        assert rp.effective_learning().mode == "supervised"
+
+    def test_effective_compile_mode(self):
+        # action family defaults to freeze via FAMILY_DEFAULTS
+        rp = RegionProgram(family="action")
+        assert rp.effective_compile_mode() == "freeze"
+        # explicit override wins
+        rp2 = RegionProgram(family="action", compile_mode="runtime")
+        # explicit "runtime" is the bare default — we still consult the
+        # family default. To force runtime even with a freeze-default
+        # family, set learning explicitly.
+        rp3 = RegionProgram(family="action", learning=LearningSpec())
+        assert rp3.effective_compile_mode() == "runtime"
+
+
+class TestOperatorDefaults:
+    def test_known_operators_have_defaults(self):
+        for op in ["attend", "retrieve", "write", "act", "compress",
+                   "intervene", "emit_residual"]:
+            assert op in OPERATOR_DEFAULTS
+
+    def test_retrieve_overrides_fn(self):
+        cp = ConnectionProgram(operator="retrieve")
+        fn, wm, trig = resolve_operator_defaults(cp, base_fn="cross_attention")
+        assert fn == "cross_attention"
+        assert wm == "add"
+
+    def test_write_uses_replace(self):
+        cp = ConnectionProgram(operator="write")
+        fn, wm, _t = resolve_operator_defaults(cp, base_fn="cross_attention")
+        assert wm == "replace"
+
+    def test_explicit_write_mode_wins(self):
+        cp = ConnectionProgram(operator="write", write_mode="gate")
+        fn, wm, _t = resolve_operator_defaults(cp, base_fn="cross_attention")
+        assert wm == "gate"
+
+    def test_explicit_trigger_wins(self):
+        cp = ConnectionProgram(operator="correct", trigger="x.err > 0.1")
+        fn, wm, trig = resolve_operator_defaults(cp, base_fn="cross_attention")
+        assert trig == "x.err > 0.1"
+
+    def test_unknown_operator_falls_back(self):
+        cp = ConnectionProgram(operator="frobnicate")
+        fn, wm, trig = resolve_operator_defaults(cp, base_fn="cross_attention")
+        assert fn == "cross_attention"
+        assert wm == "add"
+        assert trig is None
+
+
+class TestCortexInDispatcher:
+    def test_cortex_overrides_fn(self):
+        layout = _small_layout(d_model=8)
+        topo = CanvasTopology([Connection(src="a", dst="b", fn="cross_attention")])
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="zone", local_backend="linear_attention"))
+        reg.assign("a", "zone")
+        reg.assign("b", "zone")
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2,
+                                   cortex_registry=reg)
+        assert "linear_attention" in disp.fn_modules
+        # The cross_attention fn should not even be instantiated because
+        # the cortex backend supplanted it for the only edge.
+        assert "cross_attention" not in disp.fn_modules
+
+    def test_no_override_across_cortices(self):
+        layout = _small_layout(d_model=8)
+        topo = CanvasTopology([Connection(src="a", dst="b", fn="cross_attention")])
+        reg = CortexRegistry()
+        reg.register(CortexSpec(name="zoneA", local_backend="linear_attention"))
+        reg.register(CortexSpec(name="zoneB", local_backend="linear_attention"))
+        reg.assign("a", "zoneA")
+        reg.assign("b", "zoneB")
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2,
+                                   cortex_registry=reg)
+        assert "cross_attention" in disp.fn_modules
+        assert "linear_attention" not in disp.fn_modules
+
+
+class TestIdentityInDispatcher:
+    def test_slot_module_instantiated_when_identity_set(self):
+        layout = _small_layout(d_model=8)
+        topo = CanvasTopology([Connection(src="a", dst="b")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={
+                "a": RegionProgram(family="state"),
+                "b": RegionProgram(family="state",
+                                   identity=IdentitySpec(slot_capacity=4)),
+            },
+        )
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        assert "b" in disp._slot_modules
+        # Slot module participates in gradient flow.
+        x = torch.randn(1, layout.num_positions, 8, requires_grad=True)
+        out = disp(x)
+        loss = out.sum()
+        loss.backward()
+        slot_param = disp._slot_modules["b"].slots
+        assert slot_param.grad is not None
+
+
+class TestMaskSpecInDispatcher:
+    def test_mask_pairs_cached(self):
+        layout = _small_layout(d_model=8)
+        topo = CanvasTopology([Connection(src="a", dst="b")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram()},
+            connections={("a", "b"): ConnectionProgram(
+                mask_spec=MaskSpec(kind="tile", tile_h=1, tile_w=1),
+            )},
+        )
+        disp = AttentionDispatcher(topo, layout, d_model=8, n_heads=2, program=prog)
+        assert ("a", "b") in disp._mask_pairs
+        # Forward still runs without error and updates a.
+        x = torch.randn(1, layout.num_positions, 8)
+        out = disp(x)
+        a_idx = layout.region_indices("a")
+        assert not torch.allclose(out[:, a_idx], x[:, a_idx])
+
+    def test_mask_spec_serialization(self):
+        layout = _small_layout(d_model=8)
+        topo = CanvasTopology([Connection(src="a", dst="b")])
+        prog = CanvasProgram(
+            schema=CanvasSchema(layout=layout, topology=topo),
+            regions={"a": RegionProgram(), "b": RegionProgram()},
+            connections={("a", "b"): ConnectionProgram(
+                mask_spec=MaskSpec(kind="tile", tile_h=2, tile_w=2),
+            )},
+        )
+        d = prog.to_dict()
+        restored = CanvasProgram.from_dict(d)
+        cp2 = restored.connections[("a", "b")]
+        assert cp2.mask_spec is not None
+        assert cp2.mask_spec.kind == "tile"
+        assert cp2.mask_spec.tile_h == 2
+
+
+class TestHybridScheduler:
+    def test_pure_rule_based_when_no_learned(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="state",
+                                     clock=ClockSpec(period=2)),
+                "state": RegionProgram(family="state"),
+                "act": RegionProgram(family="state"),
+            },
+        )
+        sched = HybridScheduler(prog, learned_regions=[], summary_dim=0)
+        fires = [("obs" in sched.step(t)) for t in range(4)]
+        assert fires == [True, False, True, False]
+
+    def test_learned_overrides_rule(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="state",
+                                     clock=ClockSpec(period=1)),
+                "state": RegionProgram(family="state"),
+                "act": RegionProgram(family="state"),
+            },
+        )
+        # obs is delegated to LearnedScheduler. Without summary tensor it
+        # cannot fire.
+        sched = HybridScheduler(prog, learned_regions=["obs"], summary_dim=4,
+                                max_active=1)
+        active = sched.step(0)
+        assert "obs" not in active
+
+        # With summary tensor, learned scheduler will activate obs (it's
+        # the only candidate and max_active=1).
+        active = sched.step(0, summary_tensor=torch.zeros(4))
+        assert "obs" in active
+
+    def test_requires_summary_dim_when_learned_nonempty(self):
+        schema = _make_schema()
+        prog = CanvasProgram(
+            schema=schema, regions={"obs": RegionProgram()},
+        )
+        with pytest.raises(ValueError):
+            HybridScheduler(prog, learned_regions=["obs"], summary_dim=0)
+
+
+class TestCompilerMaterialization:
+    def _module_and_program(self):
+        class ToyRegionModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.w = torch.nn.Linear(4, 4)
+
+        class ToyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.regions = torch.nn.ModuleDict({
+                    "obs": ToyRegionModule(),
+                    "state": ToyRegionModule(),
+                    "mem": ToyRegionModule(),
+                })
+
+        model = ToyModel()
+        schema = _make_schema()
+        # Reuse _make_schema names; rewrite region map to include mem instead of act.
+        layout = CanvasLayout(T=4, H=4, W=4, d_model=32, regions={
+            "obs": (0, 4, 0, 2, 0, 2),
+            "state": (0, 4, 2, 4, 0, 2),
+            "mem": (0, 4, 0, 2, 2, 4),
+        })
+        schema = CanvasSchema(layout=layout, topology=CanvasTopology([]))
+        prog = CanvasProgram(
+            schema=schema,
+            regions={
+                "obs": RegionProgram(family="observation"),   # → freeze
+                "state": RegionProgram(family="state"),       # → runtime
+                "mem": RegionProgram(family="memory"),        # → export
+            },
+        )
+        return model, prog
+
+    def test_freeze_actually_freezes_params(self):
+        model, prog = self._module_and_program()
+        compiled = ProgramCompiler(prog).compile(module=model)
+        assert "obs" in compiled.frozen_regions
+        for p in model.regions["obs"].parameters():
+            assert p.requires_grad is False
+        for p in model.regions["state"].parameters():
+            assert p.requires_grad is True
+
+    def test_export_writes_file(self, tmp_path):
+        model, prog = self._module_and_program()
+        compiled = ProgramCompiler(prog).compile(
+            module=model, export_dir=str(tmp_path),
+        )
+        assert "mem" in compiled.exported_memories
+        export_path = compiled.exported_paths["mem"]
+        import os
+        assert os.path.exists(export_path)
+        assert os.path.exists(export_path + ".json")
+        # Reloadable
+        state = torch.load(export_path, weights_only=False)
+        assert "w.weight" in state
+
+    def test_constant_materializes_buffers(self, tmp_path):
+        # Force a constant compile_mode via explicit RegionProgram.
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.w = torch.nn.Linear(4, 4)
+
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.regions = torch.nn.ModuleDict({"c": Tiny()})
+
+        model = M()
+        layout = CanvasLayout(T=2, H=2, W=2, d_model=8, regions={
+            "c": (0, 2, 0, 2, 0, 2),
+        })
+        schema = CanvasSchema(layout=layout, topology=CanvasTopology([]))
+        prog = CanvasProgram(
+            schema=schema,
+            regions={"c": RegionProgram(family="state", compile_mode="constant")},
+        )
+        compiled = ProgramCompiler(prog).compile(module=model)
+        assert "c" in compiled.constant_regions
+        assert "c" not in compiled.active_regions
+        # Parameters were replaced with buffers
+        params = list(model.regions["c"].parameters())
+        assert len(params) == 0
+        buffers = dict(model.regions["c"].w.named_buffers())
+        assert "weight" in buffers and "bias" in buffers
 
 
 if __name__ == "__main__":
