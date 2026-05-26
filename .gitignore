@@ -10,3 +10,4 @@ data/
 dist/
 site/
 test_results/
+canvas_exports/

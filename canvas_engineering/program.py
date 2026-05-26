@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from canvas_engineering.schema import CanvasSchema
+from canvas_engineering.clock_ir import ClockExpr
 
 
 # ── Constants ────────────────────────────────────────────────────────
@@ -78,6 +79,7 @@ class ClockSpec:
     cooldown: int = 0
     max_silence: Optional[int] = None
     max_inner_steps: Optional[int] = None
+    expr: Optional[ClockExpr] = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,26 @@ class RegionProgram:
     constraints: Optional[ConstraintSpec] = None
     identity: Optional["IdentitySpec"] = None
 
+    def effective_learning(self) -> "LearningSpec":
+        """Resolve the effective learning recipe for this region.
+
+        Returns the explicit ``learning`` field if set, otherwise the
+        family default from ``canvas_engineering.learning.FAMILY_DEFAULTS``.
+        Unknown families fall back to a generic ``LearningSpec()``.
+        """
+        if self.learning is not None:
+            return self.learning
+        # Local import to avoid a circular learning.py → program.py edge.
+        from canvas_engineering.learning import default_learning
+        return default_learning(self.family)
+
+    def effective_compile_mode(self) -> str:
+        """Resolve the effective compile mode (region override > learning > runtime)."""
+        if self.compile_mode != "runtime":
+            return self.compile_mode
+        ls = self.effective_learning()
+        return ls.compile_mode
+
 
 @dataclass(frozen=True)
 class ConnectionProgram:
@@ -176,15 +198,151 @@ class ConnectionProgram:
     Args:
         operator: Semantic intent of this edge. "attend" = generic attention
             (backward compat default), "observe" = write evidence, "predict" =
-            propagate forward, "correct" = error-driven update, etc.
+            propagate forward, "correct" = error-driven update, etc. Each
+            operator carries default (fn, write_mode, trigger) semantics —
+            see ``OPERATOR_DEFAULTS``.
         trigger: Optional condition for firing. Serializable string expression
             referencing residual summaries. E.g., "vision.err.prediction > 0.25".
+            When None, the operator's default trigger applies (if any).
         write_mode: How output accumulates at destination. "add" = additive
             (current behavior), "replace" = overwrite, "gate" = learned gate.
+            When left at the default and the operator declares a non-default
+            write_mode, the operator's default applies at dispatch time.
+        mask_spec: Optional ``MaskSpec`` controlling the sparsity pattern of
+            attention between src and dst (full / tile / sparse). When None,
+            the dispatcher uses dense src↔dst attention.
     """
     operator: str = "attend"
     trigger: Optional[str] = None
     write_mode: str = "add"
+    mask_spec: Optional["MaskSpec"] = None
+
+
+# ── Per-operator dispatch defaults ───────────────────────────────────
+#
+# Each operator maps to a default (attention fn, write_mode, trigger).
+# At dispatch time, ConnectionProgram values OVERRIDE these:
+#   - ``cp.write_mode`` overrides if it's not the bare default "add".
+#   - ``cp.trigger`` overrides if not None.
+#   - The connection's explicit ``fn=`` (on the Connection itself)
+#     always wins over the operator's default fn.
+
+OPERATOR_DEFAULTS: Dict[str, Tuple[Optional[str], str, Optional[str]]] = {
+    # operator       → (default_fn,             default_write_mode, default_trigger)
+    "attend":         (None,                    "add",     None),
+    "observe":        (None,                    "add",     None),
+    "predict":        (None,                    "add",     None),
+    "correct":        (None,                    "add",     None),
+    "bind":           (None,                    "add",     None),
+    "retrieve":       ("cross_attention",       "add",     None),
+    "write":          ("copy_attention",        "replace", None),
+    "act":            ("copy_attention",        "replace", None),
+    "compress":       ("pooling_attention",     "add",     None),
+    "integrate":      (None,                    "add",     None),
+    "intervene":      (None,                    "replace", None),
+    "emit_residual":  (None,                    "add",     None),
+}
+
+
+def resolve_operator_defaults(
+    cp: Optional[ConnectionProgram],
+    base_fn: str,
+) -> Tuple[str, str, Optional[str]]:
+    """Resolve the effective (fn, write_mode, trigger) for an edge.
+
+    Args:
+        cp: The ConnectionProgram for this edge (or None).
+        base_fn: The attention fn already resolved from the Connection
+            and region defaults (the "explicit" fn — wins over operator).
+
+    Returns:
+        Tuple of (effective_fn, effective_write_mode, effective_trigger).
+        For unknown operators all fields fall back to (base_fn, "add", None).
+    """
+    if cp is None:
+        return base_fn, "add", None
+
+    default_fn, default_write_mode, default_trigger = OPERATOR_DEFAULTS.get(
+        cp.operator, (None, "add", None)
+    )
+
+    # Connection's explicit fn (base_fn) always wins; operator default only
+    # applies if no explicit fn was set. We can't tell here whether base_fn
+    # is "explicit" vs "fallback"; the dispatcher hands us the resolved
+    # value. Heuristic: when operator declares a fn AND base_fn is the
+    # registry default "cross_attention", prefer the operator default.
+    if default_fn is not None and base_fn == "cross_attention":
+        fn = default_fn
+    else:
+        fn = base_fn
+
+    # write_mode override: cp explicit value wins; operator default applies
+    # when cp keeps the bare "add" default.
+    write_mode = cp.write_mode if cp.write_mode != "add" else default_write_mode
+
+    # trigger override: cp explicit value wins; operator default applies
+    # when cp.trigger is None.
+    trigger = cp.trigger if cp.trigger is not None else default_trigger
+
+    return fn, write_mode, trigger
+
+
+# ── Trigger expressions ──────────────────────────────────────────────
+
+
+_TRIGGER_OPS = ("<=", ">=", "==", "!=", "<", ">")
+
+
+def evaluate_trigger(
+    trigger: Optional[str],
+    summaries: Optional[Dict[str, Dict[str, float]]],
+) -> bool:
+    """Evaluate a ConnectionProgram.trigger string against residual summaries.
+
+    Syntax: ``"<region>.<kind> <op> <number>"`` where ``<op>`` is one of
+    ``< > <= >= == !=``. Multiple clauses may be ANDed with ``&&``.
+    A ``None`` trigger always evaluates to True. A trigger referencing
+    summaries that are missing evaluates to False (cannot fire without
+    evidence).
+    """
+    if trigger is None:
+        return True
+    s = trigger.strip()
+    if not s:
+        return True
+    if summaries is None:
+        return False
+    for clause in s.split("&&"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        op_used = None
+        for op in _TRIGGER_OPS:
+            if op in clause:
+                op_used = op
+                break
+        if op_used is None:
+            return False
+        left, right = clause.split(op_used, 1)
+        source = left.strip()
+        try:
+            threshold = float(right.strip())
+        except ValueError:
+            return False
+        parts = source.rsplit(".", 1)
+        if len(parts) != 2:
+            return False
+        region, kind = parts
+        val = summaries.get(region, {}).get(kind)
+        if val is None:
+            return False
+        if op_used == "<" and not (val < threshold): return False
+        if op_used == ">" and not (val > threshold): return False
+        if op_used == "<=" and not (val <= threshold): return False
+        if op_used == ">=" and not (val >= threshold): return False
+        if op_used == "==" and not (val == threshold): return False
+        if op_used == "!=" and not (val != threshold): return False
+    return True
 
 
 # ── Serialization helpers ────────────────────────────────────────────
@@ -209,11 +367,15 @@ def _clock_to_dict(clock: ClockSpec) -> dict:
         d["max_silence"] = clock.max_silence
     if clock.max_inner_steps is not None:
         d["max_inner_steps"] = clock.max_inner_steps
+    if clock.expr is not None:
+        d["expr"] = clock.expr.to_dict()
     return d
 
 
 def _clock_from_dict(d: dict) -> ClockSpec:
     """Deserialize ClockSpec with defaults for missing keys."""
+    expr_d = d.get("expr")
+    expr = ClockExpr.from_dict(expr_d) if expr_d is not None else None
     return ClockSpec(
         domain=d.get("domain", "external"),
         mode=d.get("mode", "periodic"),
@@ -223,6 +385,7 @@ def _clock_from_dict(d: dict) -> ClockSpec:
         cooldown=d.get("cooldown", 0),
         max_silence=d.get("max_silence"),
         max_inner_steps=d.get("max_inner_steps"),
+        expr=expr,
     )
 
 
@@ -345,15 +508,37 @@ def _connection_program_to_dict(cp: ConnectionProgram) -> dict:
         d["trigger"] = cp.trigger
     if cp.write_mode != "add":
         d["write_mode"] = cp.write_mode
+    if cp.mask_spec is not None:
+        ms = cp.mask_spec
+        md: dict = {"kind": ms.kind}
+        if ms.tile_h != 1:
+            md["tile_h"] = ms.tile_h
+        if ms.tile_w != 1:
+            md["tile_w"] = ms.tile_w
+        if ms.tile_shape is not None:
+            md["tile_shape"] = list(ms.tile_shape)
+        d["mask_spec"] = md
     return d
 
 
 def _connection_program_from_dict(d: dict) -> ConnectionProgram:
     """Deserialize ConnectionProgram with defaults for missing keys."""
+    mask_spec = None
+    md = d.get("mask_spec")
+    if md is not None:
+        from canvas_engineering.masks import MaskSpec
+        ts = md.get("tile_shape")
+        mask_spec = MaskSpec(
+            kind=md.get("kind", "full"),
+            tile_h=md.get("tile_h", 1),
+            tile_w=md.get("tile_w", 1),
+            tile_shape=tuple(ts) if ts is not None else None,
+        )
     return ConnectionProgram(
         operator=d.get("operator", "attend"),
         trigger=d.get("trigger"),
         write_mode=d.get("write_mode", "add"),
+        mask_spec=mask_spec,
     )
 
 
@@ -579,5 +764,66 @@ def validate_constraints(program: CanvasProgram) -> List[str]:
                         "{}: causal_direction='forward_only' violated — "
                         "connects to {} (t0={} < {})".format(
                             name, dst_name, dst_t0, src_t0))
+
+    # ── equivariance / conservation / monotonicity static checks ─────
+    # These are structural sanity checks based on declarative info.
+    # ``_EQUIVARIANCE_COMPAT_ATTN`` lists attention fns that are known to
+    # preserve each symmetry; anything else is flagged.
+    _EQUIVARIANCE_COMPAT_ATTN = {
+        "translation": {
+            "cross_attention", "linear_attention", "local_attention",
+            "sparse_attention", "random_fixed", "perceiver_attention",
+            "cogvideox", "mamba_attention", "rwkv_attention", "hyena_attention",
+            "none", "copy",
+        },
+        "rotation": {
+            "cross_attention", "linear_attention", "perceiver_attention",
+            "none", "copy",
+        },
+        "permutation": {
+            "cross_attention", "linear_attention", "pooling_attention",
+            "perceiver_attention", "none", "copy",
+        },
+    }
+
+    for name, rp in program.regions.items():
+        if rp.constraints is None:
+            continue
+        cs = rp.constraints
+
+        # equivariance: outgoing edges must use a compatible attention fn.
+        if cs.equivariance in _EQUIVARIANCE_COMPAT_ATTN:
+            compat = _EQUIVARIANCE_COMPAT_ATTN[cs.equivariance]
+            for conn in topology.connections:
+                if conn.src != name:
+                    continue
+                fn = topology.resolve_fn(conn, layout)
+                if fn not in compat:
+                    violations.append(
+                        "{}: equivariance={!r} violated — outgoing edge "
+                        "to {} uses {!r} (compat: {})".format(
+                            name, cs.equivariance, conn.dst, fn, sorted(compat)))
+
+        # conservation: capacity & energy are incompatible with destructive
+        # writes on outgoing edges. write_mode='replace' destroys the
+        # invariant; learned 'gate' may also leak if it saturates.
+        if cs.conservation in {"capacity", "energy"}:
+            for (src, dst), cp in program.connections.items():
+                if src != name:
+                    continue
+                if cp.write_mode == "replace":
+                    violations.append(
+                        "{}: conservation={!r} violated — outgoing edge to "
+                        "{} uses write_mode='replace' (destroys invariant)".format(
+                            name, cs.conservation, dst))
+
+        # monotonicity: diffusive/filter carriers add stochastic noise or
+        # correction terms that can break monotone state evolution.
+        if cs.monotonicity in {"non_decreasing", "non_increasing"}:
+            if rp.carrier in {"diffusive", "filter"}:
+                violations.append(
+                    "{}: monotonicity={!r} incompatible with carrier={!r} "
+                    "(stochastic/correction dynamics)".format(
+                        name, cs.monotonicity, rp.carrier))
 
     return violations
