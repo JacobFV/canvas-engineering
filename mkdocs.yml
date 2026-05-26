@@ -99,10 +99,15 @@ nav:
     - canvas: api/canvas.md
     - connectivity: api/connectivity.md
     - program: api/program.md
+    - clock_ir: api/clock_ir.md
+    - dispatch: api/dispatch.md
     - residuals: api/residuals.md
     - scheduling: api/scheduling.md
     - learning: api/learning.md
     - compiler: api/compiler.md
+    - cortex: api/cortex.md
+    - identity: api/identity.md
+    - masks: api/masks.md
     - schema: api/schema.md
     - types: api/types.md
     - looped_block: api/looped_block.md

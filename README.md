@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/canvas-engineering.svg)](https://pypi.org/project/canvas-engineering/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-239%2F239-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-571%2F571-brightgreen.svg)]()
 [![Docs](https://img.shields.io/badge/docs-jacobfv.github.io-blue.svg)](https://jacobfv.github.io/canvas-engineering/)
 
 > Prompt engineering structures what an LLM *sees*. **Canvas engineering** structures what a diffusion model *thinks in*. You declare which regions of latent space carry video, actions, proprioception, reward, or thought — their geometry, their temporal frequency, their connectivity, their loss participation — and the canvas compiles that declaration into attention masks, loss weights, and frame mappings. The layout is the schema. The topology is the compute graph. Together they form a **type system for multimodal latent computation**: the model doesn't discover what its internal state means — you declare it, and the structure constrains what it learns.
@@ -338,6 +338,58 @@ bound, program = compile_program(Robot(), T=8, d_model=256)
 ```
 
 `compile_program()` calls `compile_schema()` internally, then reads `family`, `tags`, and `carrier` from each `Field` to build the program. Existing `compile_schema()` code is unchanged. See the [docs](https://jacobfv.github.io/canvas-engineering/concepts/program-layer/) for families, carriers, clocks, scheduling, and the program compiler.
+
+### Wired dispatch
+
+The program isn't decorative — the `AttentionDispatcher` honors it at execution time:
+
+```python
+from canvas_engineering import (
+    AttentionDispatcher, CortexRegistry, CortexSpec,
+    ConnectionProgram, MaskSpec, ClockSpec,
+)
+from canvas_engineering.clock_ir import Or, periodic as clock_periodic, on as clock_on
+
+# Per-operator defaults (write_mode, fn, trigger) auto-applied:
+program.connections[("state", "memory")] = ConnectionProgram(operator="write")
+# → write_mode="replace", fn="copy_attention"
+
+# Event-driven edges (skipped when trigger evaluates false):
+program.connections[("err", "belief")] = ConnectionProgram(
+    operator="correct", trigger="err.prediction > 0.25",
+)
+
+# Learned per-edge gating (sigmoid scalar trained end-to-end):
+program.connections[("memory", "belief")] = ConnectionProgram(write_mode="gate")
+
+# Sparse attention via MaskSpec:
+program.connections[("camera", "belief")] = ConnectionProgram(
+    mask_spec=MaskSpec(kind="tile", tile_h=4, tile_w=4),
+)
+
+# Composable firing rule: fire every 4 steps OR when prediction error > 0.5
+program.regions["belief"] = RegionProgram(
+    family="state",
+    clock=ClockSpec(expr=Or(clock_periodic(4), clock_on("err.prediction", gt=0.5))),
+)
+
+# Cortex grouping with a local backend override:
+cortex = CortexRegistry()
+cortex.register(CortexSpec(name="visual", local_backend="local_attention"))
+cortex.assign("camera", "visual")
+cortex.assign("belief", "visual")  # camera ↔ belief now use local_attention
+
+dispatcher = AttentionDispatcher(
+    program.schema.topology, program.schema.layout,
+    d_model=256, n_heads=8, program=program, cortex_registry=cortex,
+)
+
+# Deploy: actually materializes freeze/constant/export on the runtime module
+from canvas_engineering import ProgramCompiler
+compiled = ProgramCompiler(program).compile(module=model, export_dir="./deploy")
+# → frozen params have requires_grad=False; "constant" regions are now
+#   nn.Buffer-backed; "export" regions wrote state_dict + manifest to disk.
+```
 
 ## Attention function types
 

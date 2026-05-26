@@ -31,6 +31,9 @@ Large video diffusion models generate video. The **spatiotemporal canvas** exten
 - **18 attention function types** — From standard cross-attention to Mamba, Perceiver, RWKV, CogVideoX-native, and more
 - **Temporal fill modes** — DROP, HOLD, INTERPOLATE with higher-order IDW for cross-frequency attention
 - **`graft_looped_blocks()`** — One-line grafting onto CogVideoX with 350K trainable params
+- **Wired program semantics** — `ConnectionProgram.operator` (12 operators with per-operator defaults), `trigger` expressions, `write_mode` (add/replace/gate with learned gates), `mask_spec`, `RegionProgram.identity` (auto-instantiated slot binding), `CortexRegistry` (intra-cortex backend override), and `ClockExpr` IR composable firing rules — all consumed by the `AttentionDispatcher` at execution time
+- **`ProgramCompiler.compile(module=)`** — Materializes `freeze` / `constant` / `export` compile modes on a runtime `nn.Module`: parameter freezing, in-place parameter→buffer replacement, and `state_dict` serialization with JSON manifest
+- **`HybridScheduler`** — Composes declarative `RegionScheduler` rules with a learned MLP top-k scorer over residual summaries
 
 ## Install
 

@@ -16,7 +16,7 @@ Two sensors with different information density feed into a nonlinear prediction 
 
 **Bottom left**: Training curves — both models converge, with the structured model showing faster early convergence (first 100 epochs).
 
-**Bottom right**: Predicted vs true scatter — both models achieve tight predictions (MSE ~0.01), but the structured model's predictions cluster tighter along the diagonal.
+**Bottom right**: Predicted vs true scatter — both models achieve tight predictions (val MSE ≈ 0.012-0.013 on the latest run), with the structured model converging fastest in the first ~100 epochs.
 
 ## Type declarations
 

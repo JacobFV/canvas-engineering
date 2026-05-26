@@ -72,6 +72,49 @@ print(program.summary())
 
 Both `BoundSchema` and `CanvasProgram` are JSON-serializable. The program layers on top of the schema -- existing `compile_schema()` code continues to work unchanged.
 
+## Wired dispatch: from declarative to executable
+
+The program spec exposes several knobs that the `AttentionDispatcher`
+honors at execution time:
+
+| Spec field | Effect at dispatch |
+|---|---|
+| `ConnectionProgram.operator` | Resolves a per-operator default `(fn, write_mode, trigger)` from `OPERATOR_DEFAULTS` (e.g. `write` and `act` default to `replace`; `retrieve` to `cross_attention`; `compress` to `pooling_attention`). Explicit fields on the `ConnectionProgram` still win. |
+| `ConnectionProgram.trigger` | Edge is skipped when the expression evaluates false against current residual summaries. Syntax: `"<region>.<kind> <op> <num>"` with `&&` AND-clauses. |
+| `ConnectionProgram.write_mode` | `add` (weighted average), `replace` (overwrite), or `gate` (learned per-edge sigmoid scalar). Mixed modes combine with precedence `replace > add+gate > pass-through`. |
+| `ConnectionProgram.mask_spec` | Pre-computes `(src_idx, dst_idx)` pairs via `mask_to_index_pairs` and iterates them in place of dense `src↔dst` attention. |
+| `RegionProgram.identity` | Auto-instantiates a `SlotBindingModule` for the region; dst values are bound to that region's fixed-size slot bank before attention runs. |
+| `RegionProgram.constraints` | `validate_constraints()` enforces `equivariance` (attention-fn compatibility), `conservation` (no destructive `replace` writes), `monotonicity` (no diffusive/filter carriers), and `causal_direction` (acyclic / forward-only). |
+| `RegionProgram.clock.expr` | A `ClockExpr` AST (And/Or/Not/Cooldown/MaxSilence) that overrides the flat `mode` / `period` / `event_source` fields. |
+| `CortexRegistry` (dispatcher arg) | Intra-cortex edges substitute the cortex's `local_backend` for the resolved attention fn — fully isolated per cortex. |
+| `LearningSpec` resolution | `RegionProgram.effective_learning()` falls back to `FAMILY_DEFAULTS[family]` when the field is `None`; the compiler then materializes the resulting `compile_mode` on a runtime module. |
+
+## Compile modes at deploy
+
+`ProgramCompiler.compile(module=)` now performs the materialization
+implied by each `compile_mode`:
+
+- `freeze`: `requires_grad_(False)` on every region parameter.
+- `constant`: detach each parameter and replace it with a same-valued
+  buffer on the owning submodule. Captured tensors are exposed via
+  `CompiledProgram.constant_buffers`.
+- `export`: serialize the region's `state_dict` (plus a small JSON
+  manifest) to `export_dir`, freeze the live submodule, and record the
+  path on `CompiledProgram.exported_paths`.
+- `runtime`: keep training; no change.
+
+When called without a `module`, the compiler still records which
+regions would be touched and what mode applies — useful for static
+deploy planning without a runtime model in hand.
+
+## Hybrid scheduling
+
+`HybridScheduler` composes `RegionScheduler` (declarative clocks) with
+`LearnedScheduler` (MLP top-k from residual summaries). Pass
+`learned_regions=["belief", ...]` to delegate those regions to the
+learned scorer while the rest still fire from their declared clocks.
+`step()` returns a unified `Set[str]` of region names.
+
 ## Further reading
 
 - [Carriers](carriers.md) -- Not everything is diffusive
