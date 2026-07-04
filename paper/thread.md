@@ -85,17 +85,21 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 > simplest possible example: diffusion policy. observation → action is just the two-node canvas. multi-agent perceptual diffusion — each agent self-attending over its own obs and actions, coordinating only through declared cross-edges — is the same primitive composed
 
-**images (3):**
+**images (2):**
 
-| 1. dense / isolated / hub_spoke / causal_chain / causal_temporal | 2. 64-vehicle cooperative trajectory prediction | 3. 12-aircraft conflict detection |
-|---|---|---|
-| ![fig_topology.png](thread_assets/fig_topology.png) | ![vehicle_fleet.gif](thread_assets/vehicle_fleet.gif) | ![air_traffic.png](thread_assets/air_traffic.png) |
+| 1. diffusion policy = the two-node canvas, across frames | 2. multi-agent = the same primitive composed |
+|---|---|
+| ![stagger_diffusion_policy.png](thread_assets/stagger_diffusion_policy.png) | ![stagger_multi_agent.png](thread_assets/stagger_multi_agent.png) |
 
 <!-- WHY: anchor-to-known-thing post. Diffusion policy is the reference point most of
      this audience already trusts; showing it as the degenerate 2-node case makes the
-     general framework feel inevitable rather than exotic. Fleet gif + ATC show
-     "composed" immediately. fig_topology repeats from post 2 intentionally — repetition
-     across posts is fine on X since most readers see only one post out of context. -->
+     general framework feel inevitable rather than exotic. -->
+<!-- REPLACED the old repo demo art (vehicle_fleet.gif, air_traffic.png) and the generic
+     node-graph fig_topology.png — they showed pretty rollouts but taught nothing about
+     the mechanism. The two custom stagger-canvas diagrams show the ACTUAL structure:
+     region blocks across frames, obs→action within a frame, coordination forced through
+     a shared-task region. Same visual language as the ICU edge diagrams in post 6, so
+     the thread reads as one system. -->
 
 ---
 
@@ -105,40 +109,46 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 >
 > this is a full hospital ICU ward: 6 patients with organ-level physiology, 4 nurses with fatigue dynamics, insurance/staffing pressure, families. one compile_schema() call → 199 regions, 1,077 connections, auto-packed. heart_rate updates every frame, creatinine every 24. the sepsis pathway (renal → cardiovascular → neuro → deterioration_risk) is *declared*, not hoped for
 
-**images (2):**
+**images (1):** schema source → compiled 26×26 canvas, with entity outlines
 
-| 1. schema source → compiled 26×26 canvas, with entity outlines | 2. the animated ward monitor dashboard |
-|---|---|
-| ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) | ![icu_ward_monitor.gif](thread_assets/icu_ward_monitor.gif) |
+![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png)
 
 <!-- WHY: the ICU is the flagship for a reason — medicine makes "declared causal
-     pathway" viscerally legible to non-robotics readers. The ward-monitor gif was cut
-     from the paper (too dashboard-y for an academic figure) but it's perfect for X:
-     it looks alive. -->
+     pathway" viscerally legible to non-robotics readers. This post is the COMPILER
+     payoff: one schema instance in, 199 packed regions out. -->
+<!-- DROPPED the ward-monitor gif — it was eye-candy that showed a dashboard, not the
+     canvas idea; it competed with the allocation figure for attention and pulled the
+     post off-message. The "what the edges mean" story now lives in post 6 with the
+     stagger diagrams, which is a stronger use of that slot. -->
 
 ---
 
 ## 6/
 
-> my favorite property: the latent tensor becomes POINTABLE. you can circle a run of blocks and say "that's nurses[1]." interpretability not as post-hoc attribution but as a legend for memory, known before training starts
+> and every edge is a decision you can read back. these are three views of ONE declared ward connectivity, each highlighting a different link — nurse→patient across frames, state→risk, state persisting over time — with the causal reason it exists. you're not reverse-engineering what the model learned; you wrote the graph
 >
-> it's a type system for latent computation, literally: region bounds are struct offsets, the topology is a calling convention, a serialized schema is an ABI. two models sharing a schema can exchange latent state directly. no tokenization, no re-encoding
+> that's the deeper property: the latent tensor is POINTABLE. region bounds are struct offsets, the topology is a calling convention, a serialized schema is an ABI. two models sharing a schema can exchange latent state directly — no tokenization, no re-encoding
 
 **images (4):**
 
-| 1. "this is patients[2]" / "this is nurses[1]" annotations | 2. C struct ↔ canvas schema |
+| 1. nurse → patient (across frames): a nurse's actions change patient physiology next step | 2. state → risk: risk may only read from real physiological state |
 |---|---|
-| ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) | ![fig_type_system.png](thread_assets/fig_type_system.png) |
-| **3. the serialized schema ("the ABI")** | **4. semantic-type embedding space** |
-| ![schema_json.png](thread_assets/schema_json.png) | ![transfer_distance.png](thread_assets/transfer_distance.png) |
+| ![stagger_icu_nurse.png](thread_assets/stagger_icu_nurse.png) | ![stagger_icu_risk.png](thread_assets/stagger_icu_risk.png) |
+| **3. state(t-1) → state(t): physiology is continuous, so persistence is wired in** | **4. the serialized schema ("the ABI")** |
+| ![stagger_icu_persist.png](thread_assets/stagger_icu_persist.png) | ![schema_json.png](thread_assets/schema_json.png) |
 
-<!-- WHY: user called the pointability annotations "banger" — this post is built around
-     that reaction. ICU figure repeats from 5/ deliberately: 5/ frames it as compiler
-     output, 6/ reframes the SAME image as interpretability. Same pixels, new meaning —
-     that's a feature, it rewards people reading the whole thread. -->
-<!-- transfer_distance carries an implicit caveat (depends on representation stability,
-     an open hypothesis) — the paper says so; the tweet doesn't have room. Acceptable
-     for a thread; don't let this image travel alone without that caveat. -->
+<!-- WHY: user wanted (a) NOT to reuse fig_icu_allocation from post 5, and (b) multiple
+     annotated interactions on the same connectivity. Images 1-3 are exactly that: one
+     mini-ICU connectivity, drawn three times, each highlighting a different declared
+     edge with the causal reason it exists (custom stagger-canvas diagrams, same visual
+     language as post 4). Image 4 (schema_json) carries the type-system/ABI point with a
+     fresh non-ICU visual. -->
+<!-- DROPPED transfer_distance here — it depends on the representation-stability
+     hypothesis (still open in the paper), so it shouldn't travel in a punchy claims post
+     without that caveat. Parked; could reappear in a follow-up thread about interop. -->
+<!-- The pointability annotations ("this is nurses[1]") the user loved now live in post 5's
+     allocation figure; this post carries the complementary "every edge is a legible
+     causal choice" angle so 5 and 6 no longer share an image. -->
 
 ---
 

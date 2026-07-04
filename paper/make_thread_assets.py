@@ -433,6 +433,217 @@ def code_to_canvas():
     print("wrote code_to_canvas.png")
 
 
+# ---------------------------------------------------------------- stagger canvas
+# A reusable renderer: canvas slices staggered over time (oblique/orthographic),
+# region blocks drawn per frame, with within-frame and cross-frame (temporal)
+# information-flow edges. One edge is highlighted and annotated with the causal
+# reason it was declared. Same connectivity, attention drawn to a different edge
+# per image.
+from matplotlib.patches import FancyArrowPatch  # noqa: E402
+
+SX, SY = None, None  # set per-render
+
+
+def _center(reg, f, sx, sy):
+    c0, c1, r0, r1 = reg["c0"], reg["c1"], reg["r0"], reg["r1"]
+    return ((c0 + c1) / 2 + f * sx, (r0 + r1) / 2 + f * sy)
+
+
+def render_stagger(regions, edges, highlight, annotation, title, outfile,
+                   Wc, Hc, frames=3, figsize=(9.0, 4.8)):
+    sx, sy = Wc + 2.4, -1.15
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_aspect("equal"); ax.axis("off")
+
+    # frame extents + faint slice backdrops, back (f=0) to front
+    for f in range(frames):
+        x0, y0 = f * sx, f * sy
+        ax.add_patch(Rectangle((x0 - 0.4, y0 - 0.4), Wc + 0.8, Hc + 0.8,
+                               facecolor="#fbfbfb", edgecolor="#d8d8d8",
+                               lw=0.8, zorder=1 + f * 3))
+        tlab = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
+        ax.text(x0 + Wc / 2, y0 + Hc + 0.9, tlab, ha="center", va="top",
+                fontsize=9, color="#666666")
+
+    hl = next((e for e in edges if e["id"] == highlight), None)
+
+    def draw_edge(e, f_from, f_to, strong):
+        p = _center(regions[e["src"]], f_from, sx, sy)
+        q = _center(regions[e["dst"]], f_to, sx, sy)
+        col = e.get("color", "#cf3a3a") if strong else "#bcbcbc"
+        lw = 2.6 if strong else 1.0
+        rad = e.get("rad", 0.12)
+        z = 40 if strong else 8
+        ax.add_patch(FancyArrowPatch(
+            p, q, connectionstyle=f"arc3,rad={rad}", arrowstyle="-|>",
+            mutation_scale=15 if strong else 10, color=col, lw=lw,
+            shrinkA=13, shrinkB=13, zorder=z,
+            alpha=1.0 if strong else 0.7))
+        return p, q
+
+    # draw non-highlight edges first (context), then blocks, then highlight
+    def emit(edge_set, strong):
+        for e in edge_set:
+            if e["kind"] == "within":
+                for f in range(frames):
+                    draw_edge(e, f, f, strong)
+            else:  # temporal: f -> f+1
+                for f in range(frames - 1):
+                    draw_edge(e, f, f + 1, strong)
+
+    emit([e for e in edges if e is not hl], strong=False)
+
+    # region blocks per frame (labels on the front frame only)
+    for f in range(frames):
+        for name, reg in regions.items():
+            x0, y0 = reg["c0"] + f * sx, reg["r0"] + f * sy
+            involved = hl is not None and name in (hl["src"], hl["dst"])
+            ax.add_patch(Rectangle(
+                (x0, y0), reg["c1"] - reg["c0"], reg["r1"] - reg["r0"],
+                facecolor=reg["color"],
+                alpha=1.0 if (involved or hl is None) else 0.45,
+                edgecolor="black", lw=1.4 if involved else 0.8,
+                zorder=20 + f * 3))
+            if f == frames - 1:
+                cx, cy = _center(reg, f, sx, sy)
+                ax.text(cx, cy, reg["label"], ha="center", va="center",
+                        fontsize=7.6, family="monospace", zorder=60,
+                        color="white" if reg.get("dark") else "black")
+
+    hmid = None
+    if hl is not None:
+        if hl["kind"] == "within":
+            hmid = draw_edge(hl, frames - 1, frames - 1, strong=True)
+            for f in range(frames - 1):
+                draw_edge(hl, f, f, strong=True)
+        else:
+            for f in range(frames - 1):
+                p, q = draw_edge(hl, f, f + 1, strong=True)
+                if f == 0:
+                    hmid = (p, q)
+
+    # annotation box with a leader to the highlighted edge midpoint
+    if annotation and hmid is not None:
+        (px, py), (qx, qy) = hmid
+        mx, my = (px + qx) / 2, (py + qy) / 2
+        ax.annotate(
+            annotation, xy=(mx, my),
+            xytext=(0.5, -0.14), textcoords="axes fraction",
+            ha="center", va="top", fontsize=8.8,
+            bbox=dict(boxstyle="round,pad=0.5", fc="#fff6e6",
+                      ec=hl.get("color", "#cf3a3a"), lw=1.2),
+            arrowprops=dict(arrowstyle="-|>", lw=1.3,
+                            color=hl.get("color", "#cf3a3a"),
+                            connectionstyle="arc3,rad=0.15"))
+
+    ax.set_title(title, fontsize=10.5, pad=8)
+    ax.autoscale_view()
+    ax.margins(0.05)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, outfile), bbox_inches="tight",
+                facecolor="white", dpi=200)
+    plt.close(fig)
+    print("wrote", outfile)
+
+
+# ---- schema A: diffusion policy (the two-node canvas) --------------------
+def stagger_diffusion_policy():
+    regions = {
+        "obs":    dict(c0=0, c1=5, r0=0, r1=3, color="#7db8e8", label="observation"),
+        "action": dict(c0=1, c1=4, r0=4, r1=6, color="#f2a95c", label="action"),
+    }
+    edges = [
+        dict(id="cond", src="obs", dst="action", kind="within", color="#b03060",
+             rad=-0.25),
+        dict(id="cont", src="action", dst="action", kind="temporal",
+             color="#3a7abf", rad=0.55),
+    ]
+    render_stagger(
+        regions, edges, highlight="cond",
+        annotation="diffusion policy is the two-node canvas: the observation "
+                   "region conditions the action region — the base case every "
+                   "richer topology composes from.",
+        title="diffusion policy — observation $\\rightarrow$ action",
+        outfile="stagger_diffusion_policy.png", Wc=5, Hc=6)
+
+
+# ---- schema B: multi-agent (same primitive composed) ---------------------
+def stagger_multi_agent():
+    regions = {
+        "a_obs": dict(c0=0, c1=3, r0=0, r1=2, color="#7db8e8", label="A.obs"),
+        "a_act": dict(c0=0, c1=3, r0=4, r1=6, color="#6fa8dc", label="A.act"),
+        "task":  dict(c0=4, c1=7, r0=2, r1=4, color="#8e7cc3", label="shared\ntask",
+                      dark=True),
+        "b_obs": dict(c0=8, c1=11, r0=0, r1=2, color="#93c47d", label="B.obs"),
+        "b_act": dict(c0=8, c1=11, r0=4, r1=6, color="#7bbf63", label="B.act"),
+    }
+    edges = [
+        dict(id="a_pol", src="a_obs", dst="a_act", kind="within", rad=-0.3),
+        dict(id="b_pol", src="b_obs", dst="b_act", kind="within", rad=0.3),
+        dict(id="a_hub", src="a_act", dst="task", kind="within", rad=0.1),
+        dict(id="b_hub", src="b_act", dst="task", kind="within", rad=-0.1),
+        dict(id="hub_a", src="task", dst="a_obs", kind="within", color="#8e5cc3",
+             rad=0.1),
+        dict(id="hub_b", src="task", dst="b_obs", kind="within", color="#8e5cc3",
+             rad=-0.1),
+    ]
+    render_stagger(
+        regions, edges, highlight="a_hub",
+        annotation="two agents = the same primitive composed. they never read "
+                   "each other directly — coordination is forced through the "
+                   "shared-task region we declared between them.",
+        title="multi-agent — coordination only through the shared task",
+        outfile="stagger_multi_agent.png", Wc=11, Hc=6, figsize=(10.6, 4.6))
+
+
+# ---- schema C: mini-ICU (one connectivity, different edges highlighted) --
+_ICU_REGIONS = {
+    "monitor": dict(c0=0, c1=3, r0=0, r1=2, color="#7db8e8", label="monitor\n(vitals)"),
+    "state":   dict(c0=4, c1=8, r0=0, r1=3, color="#5aa0c0", label="patient\nstate",
+                    dark=True),
+    "risk":    dict(c0=4, c1=8, r0=4, r1=6, color="#d98a8a", label="deterior.\nrisk"),
+    "nurse":   dict(c0=0, c1=3, r0=4, r1=6, color="#93c47d", label="nurse\naction"),
+}
+_ICU_EDGES = [
+    dict(id="obs",     src="monitor", dst="state", kind="within", rad=0.12),
+    dict(id="persist", src="state",   dst="state", kind="temporal", rad=0.5),
+    dict(id="nurse",   src="nurse",   dst="state", kind="temporal", rad=0.28,
+         color="#1e7a1e"),
+    dict(id="risk",    src="state",   dst="risk",  kind="within", rad=-0.2,
+         color="#c0392b"),
+    dict(id="prompt",  src="risk",    dst="nurse", kind="within", rad=-0.2),
+]
+
+
+def stagger_icu(highlight, annotation, outfile):
+    render_stagger(
+        dict(_ICU_REGIONS), [dict(e) for e in _ICU_EDGES],
+        highlight=highlight, annotation=annotation,
+        title="one hospital-ward connectivity — declared, not learned",
+        outfile=outfile, Wc=8, Hc=6, figsize=(9.2, 5.0))
+
+
+def stagger_icu_all():
+    stagger_icu(
+        "nurse",
+        "we enable nurse$\\rightarrow$patient across frames because a nurse's "
+        "actions materially change the patient's physiology on the next step. "
+        "the edge encodes a known causal effect.",
+        "stagger_icu_nurse.png")
+    stagger_icu(
+        "risk",
+        "deterioration risk may only read from physiological state — so the "
+        "model is forced to route through the real pathway instead of latching "
+        "onto a shortcut feature.",
+        "stagger_icu_risk.png")
+    stagger_icu(
+        "persist",
+        "physiology is continuous, so patient state attends to its own previous "
+        "frame: temporal self-attention wires in persistence rather than hoping "
+        "the model discovers it.",
+        "stagger_icu_persist.png")
+
+
 def copies():
     fig = os.path.join(HERE, "figures")
     ass = os.path.join(HERE, "..", "assets")
@@ -442,11 +653,10 @@ def copies():
         (os.path.join(fig, "fig_topology.png"), "fig_topology.png"),
         (os.path.join(fig, "fig_type_system.png"), "fig_type_system.png"),
         (os.path.join(fig, "fig_icu_allocation.png"), "fig_icu_allocation.png"),
+        # transfer_distance parked (needs the representation-stability caveat);
+        # kept available for a possible interop follow-up thread.
         (os.path.join(fig, "transfer_distance.png"), "transfer_distance.png"),
         (os.path.join(ass, "looped_attention.png"), "looped_attention.png"),
-        (os.path.join(exa, "07_icu_patient.gif"), "icu_ward_monitor.gif"),
-        (os.path.join(exa, "04_fleet.gif"), "vehicle_fleet.gif"),
-        (os.path.join(exa, "06_atc.png"), "air_traffic.png"),
         (os.path.join(exa, "08_world_model_minecraft.png"), "minecraft_world_model.png"),
         (os.path.join(exa, "09b_bci_tribe.png"), "bci_tribe.png"),
         (os.path.join(exa, "03_cartpole.png"), "cartpole.png"),
@@ -466,5 +676,8 @@ if __name__ == "__main__":
     math_card()
     schema_json()
     code_to_canvas()
+    stagger_diffusion_policy()
+    stagger_multi_agent()
+    stagger_icu_all()
     copies()
     print("\nassets in", OUT)
