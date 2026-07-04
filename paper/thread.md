@@ -21,10 +21,12 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > 🧵
 
 **images (4):**
-1. `page1.png` — paper first page
-2. `canvas_rotating.gif` — rotating (T,H,W) volume with colored allocations
-3. `fig_type_system.png` — struct layout ↔ canvas schema
-4. `fig_icu_allocation.png` — the ICU compiler output (teaser for post 5)
+
+| 1. paper first page | 2. rotating (T,H,W) volume |
+|---|---|
+| ![page1.png](thread_assets/page1.png) | ![canvas_rotating.gif](thread_assets/canvas_rotating.gif) |
+| **3. struct layout ↔ canvas schema** | **4. ICU compiler output (teaser for post 5)** |
+| ![fig_type_system.png](thread_assets/fig_type_system.png) | ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) |
 
 <!-- WHY: user asked for page1 + rotating gif here. Added type-system and ICU as slots
      3-4 because post 1 gets ~10x the impressions of any other post — put the two most
@@ -43,10 +45,12 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > but instead of uniform reverse diffusion over a flat bag of tokens, the connectivity you declared means only specific blocks are even *allowed* to influence each other (attention, not conv). that hard constraint induces a causal graph inside the reverse diffusion dynamics — an interaction graph you define explicitly
 
 **images (4):**
-1. `code_to_canvas.png` — declarations on the left, compiled canvas + overlaid connection arrows on the right
-2. `fig_layout_example.png` — the five time slices of the same layout
-3. `attention_mask.png` — the topology compiled to an attention mask
-4. `fig_topology.png` — the five topology constructors
+
+| 1. declarations → compiled canvas + overlaid connection arrows | 2. the five time slices of the same layout |
+|---|---|
+| ![code_to_canvas.png](thread_assets/code_to_canvas.png) | ![fig_layout_example.png](thread_assets/fig_layout_example.png) |
+| **3. the topology compiled to an attention mask** | **4. the five topology constructors** |
+| ![attention_mask.png](thread_assets/attention_mask.png) | ![fig_topology.png](thread_assets/fig_topology.png) |
 
 <!-- WHY: this is the "how it works" post so it carries the full pipeline in pictures:
      code -> canvas -> mask -> constructor vocabulary. code_to_canvas goes first because
@@ -65,8 +69,9 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 >
 > macro is symbolic. micro is neural. and there's no interface between them, because the symbolic layer literally IS the attention mask. if there's no path between two regions, their independence is exact — by construction, not regularization. it's d-separation compiled into a denoiser
 
-**images (1):**
-1. `math_card.png` — the four core equations
+**images (1):** the four core equations
+
+![math_card.png](thread_assets/math_card.png)
 
 <!-- WHY only one image: this post is the thesis tweet, the one most likely to get
      screenshotted/quoted on its own. One austere math card underneath the boldest
@@ -81,9 +86,10 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > simplest possible example: diffusion policy. observation → action is just the two-node canvas. multi-agent perceptual diffusion — each agent self-attending over its own obs and actions, coordinating only through declared cross-edges — is the same primitive composed
 
 **images (3):**
-1. `fig_topology.png` — dense / isolated / hub_spoke / causal_chain / causal_temporal
-2. `vehicle_fleet.gif` — 64-vehicle cooperative trajectory prediction
-3. `air_traffic.png` — 12-aircraft conflict detection
+
+| 1. dense / isolated / hub_spoke / causal_chain / causal_temporal | 2. 64-vehicle cooperative trajectory prediction | 3. 12-aircraft conflict detection |
+|---|---|---|
+| ![fig_topology.png](thread_assets/fig_topology.png) | ![vehicle_fleet.gif](thread_assets/vehicle_fleet.gif) | ![air_traffic.png](thread_assets/air_traffic.png) |
 
 <!-- WHY: anchor-to-known-thing post. Diffusion policy is the reference point most of
      this audience already trusts; showing it as the degenerate 2-node case makes the
@@ -100,8 +106,10 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > this is a full hospital ICU ward: 6 patients with organ-level physiology, 4 nurses with fatigue dynamics, insurance/staffing pressure, families. one compile_schema() call → 199 regions, 1,077 connections, auto-packed. heart_rate updates every frame, creatinine every 24. the sepsis pathway (renal → cardiovascular → neuro → deterioration_risk) is *declared*, not hoped for
 
 **images (2):**
-1. `fig_icu_allocation.png` — schema source → compiled 26×26 canvas, with entity outlines
-2. `icu_ward_monitor.gif` — the animated ward monitor dashboard
+
+| 1. schema source → compiled 26×26 canvas, with entity outlines | 2. the animated ward monitor dashboard |
+|---|---|
+| ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) | ![icu_ward_monitor.gif](thread_assets/icu_ward_monitor.gif) |
 
 <!-- WHY: the ICU is the flagship for a reason — medicine makes "declared causal
      pathway" viscerally legible to non-robotics readers. The ward-monitor gif was cut
@@ -117,10 +125,12 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > it's a type system for latent computation, literally: region bounds are struct offsets, the topology is a calling convention, a serialized schema is an ABI. two models sharing a schema can exchange latent state directly. no tokenization, no re-encoding
 
 **images (4):**
-1. `fig_icu_allocation.png` — "this is patients[2]" / "this is nurses[1]" annotations
-2. `fig_type_system.png` — C struct ↔ canvas schema
-3. `schema_json.png` — the serialized schema ("the ABI")
-4. `transfer_distance.png` — semantic-type embedding space
+
+| 1. "this is patients[2]" / "this is nurses[1]" annotations | 2. C struct ↔ canvas schema |
+|---|---|
+| ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) | ![fig_type_system.png](thread_assets/fig_type_system.png) |
+| **3. the serialized schema ("the ABI")** | **4. semantic-type embedding space** |
+| ![schema_json.png](thread_assets/schema_json.png) | ![transfer_distance.png](thread_assets/transfer_distance.png) |
 
 <!-- WHY: user called the pointability annotations "banger" — this post is built around
      that reaction. ICU figure repeats from 5/ deliberately: 5/ frames it as compiler
@@ -139,8 +149,10 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > and to be upfront about what the data does NOT yet show at this scale: no measurable iterative reasoning from looping (it's weight-sharing regularization), and just co-locating modalities on a flat canvas doesn't buy binding — structure has to be declared, not hoped for. which is kind of the whole point
 
 **images (2):**
-1. `results_table.png` — Table 2 crop (loops × freeze grid)
-2. `looped_attention.png` — looped attention block diagram
+
+| 1. Table 2 crop (loops × freeze grid) | 2. looped attention block diagram |
+|---|---|
+| ![results_table.png](thread_assets/results_table.png) | ![looped_attention.png](thread_assets/looped_attention.png) |
 
 <!-- WHY the negative results stay in: pre-empting the "did you test whether it's just
      regularization?" reply is worth more than a cleaner-looking post. The judo move
@@ -162,10 +174,12 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 > apache 2.0, published under @commandagi
 
 **images (4):**
-1. `cartpole.png`
-2. `minecraft_world_model.png`
-3. `bci_tribe.png`
-4. `page1.png` — paper first page again
+
+| 1. cartpole | 2. minecraft world model |
+|---|---|
+| ![cartpole.png](thread_assets/cartpole.png) | ![minecraft_world_model.png](thread_assets/minecraft_world_model.png) |
+| **3. BCI + TRIBE** | **4. paper first page again** |
+| ![bci_tribe.png](thread_assets/bci_tribe.png) | ![page1.png](thread_assets/page1.png) |
 
 <!-- WHY: the links post doubles as an examples gallery — breadth (control, world models,
      BCI) signals "this is a library, not a demo." page1 repeats so the paper is attached
@@ -179,8 +193,9 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 > and tbh sorry for "introducing" this like it's brand new. i actually built it jan–mar and perpetually held back bc "it's not ready yet" lol. it's still early and there's real open problems (representation stability is the linchpin — it's all specified and awaiting compute). but it introduces ideas i'm not seeing in the july 2026 discourse, so here it is. would rather run the experiments in public than polish in private. enjoy!
 
-**images (1):**
-1. `canvas_rotating.gif` — bookend with the spinning canvas
+**images (1):** bookend with the spinning canvas
+
+![canvas_rotating.gif](thread_assets/canvas_rotating.gif)
 
 <!-- WHY: kept nearly verbatim from the user's draft — the self-deprecating confession
      is the most authentically-them sentence in the thread and X rewards that register.
