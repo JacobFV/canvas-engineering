@@ -300,7 +300,7 @@ def attention_mask():
 
 
 def math_card():
-    fig, ax = plt.subplots(figsize=(7.4, 4.4))
+    fig, ax = plt.subplots(figsize=(7.6, 5.0))
     ax.axis("off")
     rows = [
         ("regions are index sets (struct-offset arithmetic)",
@@ -317,15 +317,29 @@ def math_card():
          r"$a\ \mathrm{influences}\ b\ \Leftrightarrow\ G\ \mathrm{has\ a\ "
          r"directed\ path}\ a\rightarrow b$  (else independence is exact)"),
     ]
-    y = 0.97
+    # measure each equation's real height and advance by it, so the tall
+    # fraction gets the room it needs and there's a consistent gap after every
+    # equation instead of the same slab per row
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    inv = ax.transData.inverted()
+
+    def h_of(txt_obj):
+        bb = txt_obj.get_window_extent(rend)
+        (_, y1), (_, y0) = inv.transform((0, bb.y1)), inv.transform((0, bb.y0))
+        return abs(y1 - y0)
+
+    y, TITLE_EQ, GAP = 0.965, 0.05, 0.085
     for title, eq in rows:
-        ax.text(0.02, y, title, fontsize=10.5, fontweight="bold",
-                va="top", color="#333333")
-        ax.text(0.06, y - 0.085, eq, fontsize=12.5, va="top")
-        y -= 0.245
-    ax.text(0.02, 0.01, "four pieces of arithmetic carry the whole construction",
-            fontsize=9, color="#777777", style="italic")
-    fig.tight_layout()
+        t = ax.text(0.02, y, title, fontsize=11, fontweight="bold",
+                    va="top", color="#333333")
+        ey = y - h_of(t) - TITLE_EQ
+        e = ax.text(0.06, ey, eq, fontsize=13, va="top")
+        y = ey - h_of(e) - GAP
+    ax.text(0.02, y - 0.01, "four pieces of arithmetic carry the whole "
+            "construction", fontsize=9, color="#777777", style="italic",
+            va="top")
     fig.savefig(os.path.join(OUT, "math_card.png"),
                 bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -408,13 +422,12 @@ def code_to_canvas():
                             edgecolor="#cccccc", lw=0.8))
     tags = {}
     for i, (txt, col, tag) in enumerate(CODE):
-        axC.text(0.03, i, txt, fontsize=8.2, family="monospace",
-                 va="center", color=col,
-                 fontweight="bold" if tag and tag.startswith(("conn", "visual",
-                                                              "action", "reward"))
-                 else "normal")
+        to = axC.text(0.03, i, txt, fontsize=8.2, family="monospace",
+                      va="center", color=col,
+                      fontweight="bold" if tag and tag.startswith(
+                          ("conn", "visual", "action", "reward")) else "normal")
         if tag:
-            tags[tag] = i
+            tags[tag] = (i, to)              # (line index, text artist)
     axC.set_title("you declare it", fontsize=11)
 
     # ---- canvas panel (slice t=2) ----
@@ -460,9 +473,17 @@ def code_to_canvas():
             color="#555555", ha="center")
 
     # ---- pointer lines: code line -> its object on the canvas ----
-    def pointer(line_i, target, color, ls, rad=0.0, lw=1.0):
+    # start each line at the END of the referenced text (its rightmost glyph),
+    # not the code block's right wall, so there's no dead whitespace run.
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    invC = axC.transData.inverted()
+
+    def pointer(tag, target, color, ls, rad=0.0, lw=1.0):
+        line_i, txt_obj = tags[tag]
+        x_end = invC.transform((txt_obj.get_window_extent(rend).x1, 0))[0]
         fig.add_artist(ConnectionPatch(
-            xyA=(1.0, line_i), coordsA=axC.transData,
+            xyA=(x_end + 0.012, line_i), coordsA=axC.transData,
             xyB=target, coordsB=ax.transData,
             arrowstyle="-|>", mutation_scale=9, lw=lw,
             linestyle=ls, color=color, alpha=0.85, zorder=9,
@@ -470,13 +491,13 @@ def code_to_canvas():
 
     # region pointers bow outward (down-left) so they read as one layer;
     # connection pointers run straight as a second layer
-    pointer(tags["visual"], (0.10, 1.6), "#1a5fa8", (0, (5, 2)), rad=-0.10, lw=1.3)
-    pointer(tags["action"], (-0.05, 6.45), "#b06010", (0, (5, 2)), rad=0.30, lw=1.3)
-    pointer(tags["reward"], (-0.05, 7.80), "#1e7a1e", (0, (5, 2)), rad=0.32, lw=1.3)
+    pointer("visual", (0.10, 1.6), "#1a5fa8", (0, (5, 2)), rad=-0.10, lw=1.3)
+    pointer("action", (-0.05, 6.45), "#b06010", (0, (5, 2)), rad=0.30, lw=1.3)
+    pointer("reward", (-0.05, 7.80), "#1e7a1e", (0, (5, 2)), rad=0.32, lw=1.3)
     for tag in ("conn_av", "conn_rv", "conn_ra", "loop_v", "loop_a"):
         col = dict(conn_av=C_AV, conn_rv=C_RV, conn_ra=C_RA,
                    loop_v="#999999", loop_a="#999999")[tag]
-        pointer(tags[tag], mid[tag], col, (0, (1.5, 1.8)))
+        pointer(tag, mid[tag], col, (0, (1.5, 1.8)))
 
     fig.savefig(os.path.join(OUT, "code_to_canvas.png"),
                 bbox_inches="tight", facecolor="white")
@@ -495,23 +516,24 @@ from matplotlib.patches import FancyArrowPatch, Polygon  # noqa: E402
 
 def render_stagger(regions, edges, highlight, annotation, title, outfile,
                    Wc, Hc, frames=3, figsize=(9.0, 5.0)):
-    # Perspective projection: each frame is a tile tilted back at a high angle,
-    # the tiles spread horizontally, overlap, and recede with camera
-    # perspective. project() maps frame-local (u,v) -> screen (x,y).
-    TILT = np.radians(42.0)      # high angle — tiles lean back, seen from above
-    CAM = 34.0                   # camera distance (smaller = stronger perspective)
-    STEPX = Wc * 0.82            # horizontal spread (< Wc so tiles overlap a bit)
-    STEPZ = -1.2                 # later frames sit nearer (pop forward)
-    ct, st = np.cos(TILT), np.sin(TILT)
+    # Projection: each frame is a vertical panel rotated about the Y (vertical)
+    # axis — horizontals foreshorten, verticals stay level ("flat on x"), with a
+    # bit of camera perspective. Frames are placed left->right and OVERLAP: the
+    # next panel's left blocks truncate the previous panel's right blocks.
+    THETA = np.radians(46.0)     # Y-axis rotation (bigger = more angled)
+    CAM = 24.0                   # camera distance (smaller = stronger perspective)
+    cth, sth = np.cos(THETA), np.sin(THETA)
+    _s_right = CAM / (CAM + Wc * sth)
+    _w_proj = Wc * cth * _s_right            # projected width of one panel
+    DX = _w_proj * 0.74                      # frame step -> ~26% overlap
 
     def project(u, v, f):
-        lx = u - Wc / 2.0
-        lm = Hc / 2.0 - v                       # up-positive, v=0 is top
-        X = lx + (f - (frames - 1) / 2.0) * STEPX
-        Y = lm * ct
-        Z = lm * st + f * STEPZ                  # top recedes; later frames nearer
-        s = CAM / (CAM + Z)
-        return np.array([X * s, Y * s])
+        Xr = u * cth
+        Zr = u * sth                          # right edge recedes into depth
+        s = CAM / (CAM + Zr)
+        sx = Xr * s + f * DX
+        sy = (Hc / 2.0 - v) * s               # centered on a level midline
+        return np.array([sx, sy])
 
     def block_poly(reg, f):
         c0, c1, r0, r1 = reg["c0"], reg["c1"], reg["r0"], reg["r1"]
@@ -525,18 +547,14 @@ def render_stagger(regions, edges, highlight, annotation, title, outfile,
     ax.set_aspect("equal"); ax.axis("off")
     hl = next((e for e in edges if e["id"] == highlight), None)
 
-    order = list(range(frames))                 # f=0 furthest -> draw first (back)
+    order = list(range(frames))                 # left->right; later frame on top
 
-    # faint tilted slice backdrops
+    # faint rotated slice backdrops (later panels cover the previous right edge)
     for f in order:
-        corners = [project(-0.4, -0.4, f), project(Wc + 0.4, -0.4, f),
-                   project(Wc + 0.4, Hc + 0.4, f), project(-0.4, Hc + 0.4, f)]
+        corners = [project(-0.3, -0.3, f), project(Wc + 0.3, -0.3, f),
+                   project(Wc + 0.3, Hc + 0.3, f), project(-0.3, Hc + 0.3, f)]
         ax.add_patch(Polygon(corners, closed=True, facecolor="#fbfbfb",
                              edgecolor="#d3d3d3", lw=0.8, zorder=1 + f * 4))
-        tl = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
-        tp = project(0.2, Hc + 0.2, f)          # lower-left corner, clear of title
-        ax.text(tp[0], tp[1], tl, ha="right", va="top", fontsize=13,
-                color="#555555", zorder=2 + f * 4)
 
     def draw_edge(e, f_from, f_to, strong):
         p, q = center(regions[e["src"]], f_from), center(regions[e["dst"]], f_to)
@@ -573,6 +591,14 @@ def render_stagger(regions, edges, highlight, annotation, title, outfile,
                 ax.text(cx, cy, reg["label"], ha="center", va="center",
                         fontsize=11, family="monospace", zorder=60, weight="bold",
                         color="white" if reg.get("dark") else "black")
+
+    # time labels last (high zorder) at each panel's bottom-left, so the overlap
+    # of the next panel doesn't bury them
+    for f in order:
+        tl = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
+        tp = project(0.4, Hc + 0.55, f)
+        ax.text(tp[0], tp[1], tl, ha="center", va="top", fontsize=13,
+                color="#555555", zorder=80)
 
     hmid = None
     if hl is not None:
@@ -729,46 +755,85 @@ def real_vs_neural():
     axC = fig.add_subplot(gs[1, :])   # code, full width
 
     # ---------- REAL WORLD ----------
+    from matplotlib.patches import Circle
+    from matplotlib.transforms import Affine2D
     axW.set_xlim(0, 10); axW.set_ylim(0, 7.4); axW.set_aspect("equal")
     axW.axis("off")
-    axW.add_patch(Rectangle((0, 0), 10, 7.4, facecolor="#eef4ea",
+    axW.add_patch(Rectangle((0, 0), 10, 7.4, facecolor="#e8f0e2",
                             edgecolor="#c8d6bf", lw=1.0))
+    # faint grass tufts for field texture
+    rng_pts = [(0.8, 0.7), (1.6, 3.2), (0.6, 5.2), (3.5, 0.9), (4.9, 6.6),
+               (6.2, 0.7), (8.7, 3.0), (9.2, 5.6), (7.0, 6.5), (3.0, 4.4),
+               (5.8, 5.0), (9.3, 1.2)]
+    for gx, gy in rng_pts:
+        for off in (-0.12, 0, 0.12):
+            axW.add_patch(FancyArrowPatch((gx + off, gy), (gx + off * 1.4, gy + 0.28),
+                          arrowstyle="-", color="#bcd3ac", lw=1.1, zorder=1))
     axW.set_title("the real world: what the causal structure IS",
                   fontsize=11, pad=6)
     target = (5.0, 3.9)
-    axW.plot(*target, marker="*", ms=26, color="#d4af37",
+    axW.add_patch(Circle(target, 0.55, facecolor="none", edgecolor="#c9a227",
+                         lw=1.2, ls=(0, (3, 2)), zorder=4))
+    axW.plot(*target, marker="*", ms=24, color="#d4af37",
              markeredgecolor="#8a6d00", mew=0.8, zorder=5)
-    axW.text(target[0], target[1] - 0.75, "shared task", ha="center",
+    axW.text(target[0], target[1] - 0.95, "shared task", ha="center",
              fontsize=8.5, color="#7a5c00")
+
+    def draw_robot(cx, cy, ang, color, label):
+        tr = Affine2D().rotate_deg_around(cx, cy, ang) + axW.transData
+        # wheels (dark, stick out on the four corners)
+        for wx, wy in [(-0.3, 0.42), (0.3, 0.42), (-0.3, -0.42), (0.3, -0.42)]:
+            axW.add_patch(FancyBboxPatch((cx + wx - 0.15, cy + wy - 0.1), 0.3, 0.2,
+                          boxstyle="round,pad=0.005,rounding_size=0.05",
+                          facecolor="#2b2b2b", edgecolor="black", lw=0.5,
+                          transform=tr, zorder=6))
+        # chassis
+        axW.add_patch(FancyBboxPatch((cx - 0.42, cy - 0.36), 0.84, 0.72,
+                      boxstyle="round,pad=0.01,rounding_size=0.1",
+                      facecolor=color, edgecolor="black", lw=1.1,
+                      transform=tr, zorder=7))
+        # solar/detail stripe across the back
+        axW.add_patch(Rectangle((cx - 0.28, cy - 0.28), 0.22, 0.56,
+                      facecolor="#00000022", edgecolor="none",
+                      transform=tr, zorder=8))
+        # camera/sensor at the front + lens
+        axW.add_patch(Circle((cx + 0.34, cy), 0.15, facecolor="#f2f2f2",
+                      edgecolor="black", lw=0.9, transform=tr, zorder=9))
+        axW.add_patch(Circle((cx + 0.4, cy), 0.07, facecolor="#1a1a1a",
+                      transform=tr, zorder=10))
+        # antenna
+        axW.add_patch(FancyArrowPatch((cx - 0.36, cy + 0.22),
+                      (cx - 0.62, cy + 0.5), arrowstyle="-", color="#333",
+                      lw=1.0, transform=tr, zorder=6))
+        axW.add_patch(Circle((cx - 0.62, cy + 0.5), 0.05, facecolor="#cc3333",
+                      transform=tr, zorder=6))
+        axW.text(cx, cy - 0.02, label, ha="center", va="center", color="white",
+                 fontsize=8, fontweight="bold", family="monospace", zorder=11)
+
     robots = [(2.0, 1.8), (8.0, 1.9), (2.2, 5.5), (7.8, 5.4)]
-    for i, (rx, ry) in enumerate(robots):
-        ang = np.degrees(np.arctan2(target[1] - ry, target[0] - rx))
-        # vision cone (observation)
-        axW.add_patch(Wedge((rx, ry), 2.4, ang - 26, ang + 26,
-                            facecolor=R[i], alpha=0.16, edgecolor="none",
-                            zorder=2))
-        # action arrow (motion toward the task)
-        dx, dy = np.cos(np.radians(ang)), np.sin(np.radians(ang))
-        axW.add_patch(FancyArrowPatch((rx, ry), (rx + 1.5 * dx, ry + 1.5 * dy),
-                                      arrowstyle="-|>", mutation_scale=16,
-                                      color=R[i], lw=2.4, zorder=4))
-        # robot body
-        axW.add_patch(FancyBboxPatch((rx - 0.42, ry - 0.32), 0.84, 0.64,
-                                     boxstyle="round,pad=0.02,rounding_size=0.12",
-                                     facecolor=R[i], edgecolor="black", lw=1.0,
-                                     zorder=6))
-        axW.text(rx, ry, RL[i], ha="center", va="center", color="white",
-                 fontsize=8.5, fontweight="bold", family="monospace", zorder=7)
-    # coordination ring (robots share the task, not each other directly)
+    # coordination ring behind everything
     for a, b in [(0, 1), (1, 3), (3, 2), (2, 0)]:
         axW.add_patch(FancyArrowPatch(robots[a], robots[b], arrowstyle="-",
                                       color="#9a9a9a", lw=1.0, ls=(0, (4, 3)),
                                       zorder=1))
+    for i, (rx, ry) in enumerate(robots):
+        ang = np.degrees(np.arctan2(target[1] - ry, target[0] - rx))
+        dx, dy = np.cos(np.radians(ang)), np.sin(np.radians(ang))
+        # vision cone (observation), from the camera at the robot front
+        axW.add_patch(Wedge((rx + 0.34 * dx, ry + 0.34 * dy), 2.3, ang - 24,
+                            ang + 24, facecolor=R[i], alpha=0.15,
+                            edgecolor="none", zorder=2))
+        # action arrow (motion toward the task)
+        axW.add_patch(FancyArrowPatch((rx + 0.6 * dx, ry + 0.6 * dy),
+                                      (rx + 1.7 * dx, ry + 1.7 * dy),
+                                      arrowstyle="-|>", mutation_scale=15,
+                                      color=R[i], lw=2.4, zorder=4))
+        draw_robot(rx, ry, ang, R[i], RL[i])
     # exemplar labels on r0
-    axW.annotate("observation\n(vision cone)", xy=(2.9, 3.0), xytext=(0.2, 6.7),
+    axW.annotate("observation\n(vision cone)", xy=(3.0, 3.0), xytext=(0.2, 6.7),
                  fontsize=8, color=R[0], ha="left",
                  arrowprops=dict(arrowstyle="-", lw=0.8, color=R[0]))
-    axW.annotate("action\n(how it moves)", xy=(2.9, 2.4), xytext=(3.4, 0.35),
+    axW.annotate("action\n(how it moves)", xy=(3.0, 2.4), xytext=(3.6, 0.35),
                  fontsize=8, color=R[0], ha="center",
                  arrowprops=dict(arrowstyle="-", lw=0.8, color=R[0]))
 
