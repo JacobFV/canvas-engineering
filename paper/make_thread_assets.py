@@ -107,37 +107,141 @@ def rotating_gif():
 
 
 def attention_mask():
-    # one cell per (region, frame): visual t0..t4, action t0..t4, reward t2.
-    # same topology as the paper example; dense in time.
-    cells = ([f"v{t}" for t in range(5)] + [f"a{t}" for t in range(5)] + ["r2"])
-    grp = {c: c[0] for c in cells}
-    edges = {("v", "v"), ("a", "v"), ("a", "a"),
-             ("r", "v"), ("r", "a"), ("r", "r")}
-    n = len(cells)
-    M = np.zeros((n, n))
-    for i, ci in enumerate(cells):
-        for j, cj in enumerate(cells):
-            if (grp[ci], grp[cj]) in edges:
-                M[i, j] = 1.0
+    # The REAL compiled mask, at true proportions. visual=180, action=5,
+    # reward=1 positions, so the blocks are sized 180/5/1 — visual dominates
+    # (bandwidth-proportional allocation), and the mask is asymmetric
+    # (action queries visual, but visual does NOT query action).
+    from canvas_engineering import CanvasLayout, CanvasTopology, Connection
+    layout = CanvasLayout(
+        T=T, H=H, W=W, d_model=32,
+        regions={k: v[0] for k, v in REGIONS.items()}, t_current=2)
+    topo = CanvasTopology(connections=[
+        Connection(src="visual", dst="visual"),
+        Connection(src="action", dst="visual"),
+        Connection(src="action", dst="action"),
+        Connection(src="reward", dst="visual"),
+        Connection(src="reward", dst="action"),
+        Connection(src="reward", dst="reward"),
+    ])
+    M = np.asarray(topo.to_attention_mask(layout), dtype=float)
 
-    fig, ax = plt.subplots(figsize=(5.9, 5.9))
-    ax.imshow(1 - M, cmap="gray", vmin=-0.25, vmax=1, interpolation="nearest")
-    for k in (4.5, 9.5):
-        ax.axhline(k, color="#b03030", lw=1.4)
-        ax.axvline(k, color="#b03030", lw=1.4)
-    for k in range(n + 1):
-        ax.axhline(k - 0.5, color="#ffffff", lw=0.6, zorder=1)
-        ax.axvline(k - 0.5, color="#ffffff", lw=0.6, zorder=1)
-    ax.set_xticks(range(n)); ax.set_yticks(range(n))
-    ax.set_xticklabels(cells, fontsize=9, family="monospace")
-    ax.set_yticklabels(cells, fontsize=9, family="monospace")
-    ax.set_xlabel("keys (dst)  —  visual | action | reward", fontsize=9.5)
-    ax.set_ylabel("reward | action | visual  —  queries (src)", fontsize=9.5)
-    ax.set_title("the topology, compiled to an attention mask\n"
-                 "(one cell per region-frame; dark = attention allowed)",
-                 fontsize=10.5)
-    ax.tick_params(length=0)
-    fig.tight_layout()
+    # keep only allocated positions, grouped by region (drop the 134 empty)
+    order, bands, cursor = [], [], 0
+    for name, col in (("visual", C_VISUAL), ("action", C_ACTION),
+                      ("reward", C_REWARD)):
+        idx = sorted(layout.region_indices(name))
+        order += idx
+        bands.append((name, col, cursor, cursor + len(idx)))
+        cursor += len(idx)
+    order = np.array(order)
+    Mv = M[np.ix_(order, order)]
+    n = len(order)
+
+    names = [b[0] for b in bands]
+    cols = [b[1] for b in bands]
+    sizes = [b[3] - b[2] for b in bands]
+    # edge = True where region i (src/query) attends region j (dst/key)
+    edge = np.zeros((3, 3), bool)
+    for i, ni in enumerate(names):
+        ii = sorted(layout.region_indices(ni))
+        for j, nj in enumerate(names):
+            jj = sorted(layout.region_indices(nj))
+            edge[i, j] = bool((M[np.ix_(ii, jj)] > 0).any())
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(10.2, 5.4),
+                                   gridspec_kw={"width_ratios": [1.0, 1.15]})
+
+    # ---- LEFT: the structure (who attends whom), equal cells for legibility
+    for i in range(3):
+        for j in range(3):
+            on = edge[i, j]
+            axL.add_patch(Rectangle((j, i), 1, 1,
+                                    facecolor="#222222" if on else "#f0f0f0",
+                                    edgecolor="#b03030", lw=1.0))
+            if on:
+                axL.text(j + 0.5, i + 0.5, f"{sizes[i]}×{sizes[j]}",
+                         ha="center", va="center", fontsize=9,
+                         color="white", family="monospace")
+    for k, (name, col, sz) in enumerate(zip(names, cols, sizes)):
+        axL.add_patch(Rectangle((k, -0.44), 1, 0.44, facecolor=col,
+                                edgecolor="black", lw=0.5, clip_on=False))
+        axL.add_patch(Rectangle((-0.44, k), 0.44, 1, facecolor=col,
+                                edgecolor="black", lw=0.5, clip_on=False))
+        axL.text(k + 0.5, -0.22, name, ha="center", va="center", fontsize=8,
+                 family="monospace")
+        axL.text(-0.22, k + 0.5, name, ha="center", va="center", fontsize=8,
+                 family="monospace", rotation=90)
+    axL.set_xlim(-0.44, 3); axL.set_ylim(3, -1.15)
+    axL.set_aspect("equal"); axL.axis("off")
+    axL.text(1.28, -0.92, "keys (dst) →", ha="center", fontsize=8.5)
+    axL.text(-0.92, 1.5, "← queries (src)", va="center", rotation=90,
+             fontsize=8.5)
+    axL.set_title("the structure: which regions may attend\n"
+                  "dark = edge; each cell is a full block of the labeled shape.\n"
+                  "asymmetric — action→visual on, visual→action off",
+                  fontsize=8.6, pad=6)
+
+    # ---- RIGHT: the real mask, broken-axis so it stays linear per segment
+    # and explicitly admits the skipped visual positions.
+    Kv = 8                                   # visual positions kept each end
+    vis = sorted(layout.region_indices("visual"))
+    act = sorted(layout.region_indices("action"))
+    rew = sorted(layout.region_indices("reward"))
+    disp = vis[:Kv] + vis[-Kv:] + act + rew  # 8+8+5+1 = 22 shown
+    Md = M[np.ix_(np.array(disp), np.array(disp))]
+    m = len(disp)
+    skip = len(vis) - 2 * Kv                  # 164 visual positions cut
+    xb = Kv                                    # break location (both axes)
+    vis_end, act_end = 2 * Kv, 2 * Kv + len(act)  # 16, 21
+
+    axR.imshow(1 - Md, cmap="gray", vmin=0, vmax=1, interpolation="nearest",
+               extent=[0, m, m, 0])
+    # region dividers
+    for d in (vis_end, act_end):
+        axR.axhline(d, color="#b03030", lw=1.0)
+        axR.axvline(d, color="#b03030", lw=1.0)
+
+    # the cut-through: a white gap + diagonal break marks on both axes
+    def break_marks(along_x):
+        for edgepos in (0, m):
+            if along_x:
+                axR.plot([xb - 0.45, xb + 0.45],
+                         [edgepos + 0.5, edgepos - 0.5],
+                         color="#b03030", lw=1.3, clip_on=False, zorder=7)
+            else:
+                axR.plot([edgepos - 0.5, edgepos + 0.5],
+                         [xb - 0.45, xb + 0.45],
+                         color="#b03030", lw=1.3, clip_on=False, zorder=7)
+    axR.plot([xb, xb], [0, m], color="white", lw=3.2, zorder=6)
+    axR.plot([0, m], [xb, xb], color="white", lw=3.2, zorder=6)
+    break_marks(along_x=True)
+    break_marks(along_x=False)
+    axR.text(xb + 0.35, m * 0.52, f"⁄⁄  {skip} visual positions skipped",
+             rotation=90, va="center", ha="left", fontsize=7.5,
+             color="#b03030",
+             bbox=dict(fc="white", ec="none", pad=0.5))
+
+    # colored region bars (display widths; per-cell scale is constant → linear)
+    bar = m * 0.05
+    for (name, col, sz, a, b) in [("visual", C_VISUAL, len(vis), 0, vis_end),
+                                  ("action", C_ACTION, len(act), vis_end, act_end),
+                                  ("reward", C_REWARD, len(rew), act_end, m)]:
+        axR.add_patch(Rectangle((a, m), b - a, bar, facecolor=col,
+                                edgecolor="black", lw=0.5, clip_on=False))
+        axR.add_patch(Rectangle((-bar, a), bar, b - a, facecolor=col,
+                                edgecolor="black", lw=0.5, clip_on=False))
+        note = f"{name}·{sz}" + (f" ({skip} skipped)" if name == "visual" else "")
+        axR.text((a + b) / 2, m + bar * 1.7, note, ha="center", va="bottom",
+                 fontsize=7.5 if name == "visual" else 6.8, family="monospace",
+                 rotation=0 if name == "visual" else 40)
+    axR.set_xlim(-bar, m); axR.set_ylim(m + bar, -0.5)
+    axR.set_xticks([]); axR.set_yticks([])
+    axR.set_title("the real mask, broken-axis: linear within each segment,\n"
+                  "the cut admits the skipped rows. 186 allocated of 320 "
+                  "positions —\nvisual (180) dwarfs action (5) and reward (1)",
+                  fontsize=8.6, pad=6)
+
+    fig.tight_layout(w_pad=2.5)
     fig.savefig(os.path.join(OUT, "attention_mask.png"),
                 bbox_inches="tight", facecolor="white")
     plt.close(fig)
