@@ -25,7 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "thread_assets")
 os.makedirs(OUT, exist_ok=True)
 
-plt.rcParams.update({"font.family": "serif", "font.size": 10, "figure.dpi": 180})
+plt.rcParams.update({"font.family": "serif", "font.size": 10, "figure.dpi": 180,
+                     "mathtext.fontset": "cm"})  # Computer Modern: serif math
 
 C_VISUAL, C_ACTION, C_REWARD = "#7db8e8", "#f2a95c", "#8fd18f"
 
@@ -268,10 +269,8 @@ def attention_mask():
     axR.plot([0, m], [xb, xb], color="white", lw=3.2, zorder=6)
     break_marks(along_x=True)
     break_marks(along_x=False)
-    axR.text(xb + 0.35, m * 0.52, f"⁄⁄  {skip} visual positions skipped",
-             rotation=90, va="center", ha="left", fontsize=7.5,
-             color="#b03030",
-             bbox=dict(fc="white", ec="none", pad=0.5))
+    # (the "{skip} skipped" note lives on the visual region bar below — the old
+    # 90°-rotated red label overlapped the matrix and was redundant)
 
     # colored region bars (display widths; per-cell scale is constant → linear)
     bar = m * 0.05
@@ -491,73 +490,86 @@ def code_to_canvas():
 # information-flow edges. One edge is highlighted and annotated with the causal
 # reason it was declared. Same connectivity, attention drawn to a different edge
 # per image.
-from matplotlib.patches import FancyArrowPatch  # noqa: E402
-
-SX, SY = None, None  # set per-render
-
-
-def _center(reg, f, sx, sy):
-    c0, c1, r0, r1 = reg["c0"], reg["c1"], reg["r0"], reg["r1"]
-    return ((c0 + c1) / 2 + f * sx, (r0 + r1) / 2 + f * sy)
+from matplotlib.patches import FancyArrowPatch, Polygon  # noqa: E402
 
 
 def render_stagger(regions, edges, highlight, annotation, title, outfile,
-                   Wc, Hc, frames=3, figsize=(9.0, 4.8)):
-    sx, sy = Wc + 2.4, -1.15
+                   Wc, Hc, frames=3, figsize=(9.0, 5.0)):
+    # Perspective projection: each frame is a tile tilted back at a high angle,
+    # the tiles spread horizontally, overlap, and recede with camera
+    # perspective. project() maps frame-local (u,v) -> screen (x,y).
+    TILT = np.radians(42.0)      # high angle — tiles lean back, seen from above
+    CAM = 34.0                   # camera distance (smaller = stronger perspective)
+    STEPX = Wc * 0.82            # horizontal spread (< Wc so tiles overlap a bit)
+    STEPZ = -1.2                 # later frames sit nearer (pop forward)
+    ct, st = np.cos(TILT), np.sin(TILT)
+
+    def project(u, v, f):
+        lx = u - Wc / 2.0
+        lm = Hc / 2.0 - v                       # up-positive, v=0 is top
+        X = lx + (f - (frames - 1) / 2.0) * STEPX
+        Y = lm * ct
+        Z = lm * st + f * STEPZ                  # top recedes; later frames nearer
+        s = CAM / (CAM + Z)
+        return np.array([X * s, Y * s])
+
+    def block_poly(reg, f):
+        c0, c1, r0, r1 = reg["c0"], reg["c1"], reg["r0"], reg["r1"]
+        return [project(c0, r0, f), project(c1, r0, f),
+                project(c1, r1, f), project(c0, r1, f)]
+
+    def center(reg, f):
+        return project((reg["c0"] + reg["c1"]) / 2, (reg["r0"] + reg["r1"]) / 2, f)
+
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect("equal"); ax.axis("off")
-
-    # frame extents + faint slice backdrops, back (f=0) to front
-    for f in range(frames):
-        x0, y0 = f * sx, f * sy
-        ax.add_patch(Rectangle((x0 - 0.4, y0 - 0.4), Wc + 0.8, Hc + 0.8,
-                               facecolor="#fbfbfb", edgecolor="#d8d8d8",
-                               lw=0.8, zorder=1 + f * 3))
-        tlab = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
-        ax.text(x0 + Wc / 2, y0 + Hc + 0.9, tlab, ha="center", va="top",
-                fontsize=13, color="#555555")
-
     hl = next((e for e in edges if e["id"] == highlight), None)
 
+    order = list(range(frames))                 # f=0 furthest -> draw first (back)
+
+    # faint tilted slice backdrops
+    for f in order:
+        corners = [project(-0.4, -0.4, f), project(Wc + 0.4, -0.4, f),
+                   project(Wc + 0.4, Hc + 0.4, f), project(-0.4, Hc + 0.4, f)]
+        ax.add_patch(Polygon(corners, closed=True, facecolor="#fbfbfb",
+                             edgecolor="#d3d3d3", lw=0.8, zorder=1 + f * 4))
+        tl = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
+        tp = project(0.2, Hc + 0.2, f)          # lower-left corner, clear of title
+        ax.text(tp[0], tp[1], tl, ha="right", va="top", fontsize=13,
+                color="#555555", zorder=2 + f * 4)
+
     def draw_edge(e, f_from, f_to, strong):
-        p = _center(regions[e["src"]], f_from, sx, sy)
-        q = _center(regions[e["dst"]], f_to, sx, sy)
-        col = e.get("color", "#cf3a3a") if strong else "#bcbcbc"
-        lw = 2.6 if strong else 1.0
-        rad = e.get("rad", 0.12)
-        z = 40 if strong else 8
+        p, q = center(regions[e["src"]], f_from), center(regions[e["dst"]], f_to)
+        col = e.get("color", "#cf3a3a") if strong else "#b6b6b6"
         ax.add_patch(FancyArrowPatch(
-            p, q, connectionstyle=f"arc3,rad={rad}", arrowstyle="-|>",
-            mutation_scale=15 if strong else 10, color=col, lw=lw,
-            shrinkA=13, shrinkB=13, zorder=z,
-            alpha=1.0 if strong else 0.7))
+            p, q, connectionstyle=f"arc3,rad={e.get('rad', 0.12)}",
+            arrowstyle="-|>", mutation_scale=15 if strong else 10, color=col,
+            lw=2.6 if strong else 1.0, shrinkA=11, shrinkB=11,
+            zorder=90 if strong else 8, alpha=1.0 if strong else 0.7))
         return p, q
 
-    # draw non-highlight edges first (context), then blocks, then highlight
     def emit(edge_set, strong):
         for e in edge_set:
             if e["kind"] == "within":
                 for f in range(frames):
                     draw_edge(e, f, f, strong)
-            else:  # temporal: f -> f+1
+            else:
                 for f in range(frames - 1):
                     draw_edge(e, f, f + 1, strong)
 
     emit([e for e in edges if e is not hl], strong=False)
 
-    # region blocks per frame (labels on the front frame only)
-    for f in range(frames):
+    # region blocks per frame as projected quads; labels on the nearest frame
+    for f in order:
         for name, reg in regions.items():
-            x0, y0 = reg["c0"] + f * sx, reg["r0"] + f * sy
             involved = hl is not None and name in (hl["src"], hl["dst"])
-            ax.add_patch(Rectangle(
-                (x0, y0), reg["c1"] - reg["c0"], reg["r1"] - reg["r0"],
-                facecolor=reg["color"],
+            ax.add_patch(Polygon(
+                block_poly(reg, f), closed=True, facecolor=reg["color"],
                 alpha=1.0 if (involved or hl is None) else 0.45,
                 edgecolor="black", lw=1.4 if involved else 0.8,
-                zorder=20 + f * 3))
+                zorder=20 + f * 4))
             if f == frames - 1:
-                cx, cy = _center(reg, f, sx, sy)
+                cx, cy = center(reg, f)
                 ax.text(cx, cy, reg["label"], ha="center", va="center",
                         fontsize=11, family="monospace", zorder=60, weight="bold",
                         color="white" if reg.get("dark") else "black")
