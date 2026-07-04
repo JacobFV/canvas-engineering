@@ -57,21 +57,73 @@ def results_table():
     print("!! table not found")
 
 
+def results_chart():
+    # The walk-away receipt: at 3 loops, the FROZEN 350K-param model has the
+    # lowest action loss — fewer trainable params than either alternative, yet
+    # better actions. Single series (action loss); winner highlighted; params
+    # annotated; direct value labels; recessive axis.
+    labels = ["frozen\n350K params", "half-frozen\n3.7M params",
+              "unfrozen\n11.7M params"]
+    loss = [0.073, 0.107, 0.088]
+    win = 0
+    ink, muted = "#2a2f36", "#6b7580"
+    bar_ctx, bar_win = "#9aa7b0", "#1f9e7a"
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.5))
+    xs = np.arange(3)
+    for i in range(3):
+        ax.bar(xs[i], loss[i], width=0.62,
+               color=bar_win if i == win else bar_ctx, zorder=3)
+        ax.text(xs[i], loss[i] + 0.0022, f"{loss[i]:.3f}", ha="center",
+                va="bottom", fontsize=12.5,
+                fontweight="bold" if i == win else "normal",
+                color=ink if i == win else muted)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, fontsize=10.5, color=ink)
+    ax.set_ylim(0, 0.135)
+    ax.set_ylabel("action loss  (lower is better)", fontsize=10.5, color=ink)
+    ax.set_yticks([0, 0.05, 0.10])
+    ax.tick_params(axis="y", labelcolor=muted, length=0)
+    ax.tick_params(axis="x", length=0)
+    for s in ("top", "right", "left"):
+        ax.spines[s].set_visible(False)
+    ax.spines["bottom"].set_color("#cfd4d9")
+    ax.grid(axis="y", color="#eef1f3", lw=1.0, zorder=0)
+    ax.set_axisbelow(True)
+    # headline callout — land the arrow on the winner bar's left shoulder so it
+    # never crosses the value label
+    ax.annotate("33× fewer trainable params\nthan unfrozen — and the "
+                "lowest loss", xy=(win - 0.31, loss[win] - 0.004),
+                xytext=(0.55, 0.129), fontsize=10.5, color=bar_win,
+                fontweight="bold", va="top", ha="left",
+                arrowprops=dict(arrowstyle="-|>", color=bar_win, lw=1.6,
+                                connectionstyle="arc3,rad=0.25"))
+    ax.set_title("looped attention: recurrence beats scale\n"
+                 "(3 loops on a frozen CogVideoX-2B backbone; "
+                 "1.73× parameter efficiency, p<0.001)",
+                 fontsize=11.5, color=ink, pad=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "results_chart.png"),
+                bbox_inches="tight", facecolor="white", dpi=200)
+    plt.close(fig)
+    print("wrote results_chart.png")
+
+
 def rotating_gif():
-    # Only the allocated regions are filled — solid, opaque blocks. Filling
-    # the whole volume culls interior faces and hides everything but the near
-    # hull, so back faces never render. Solid blocks + a wireframe canvas box
-    # let matplotlib depth-sort every face, front and back.
+    # Only the allocated regions are filled (as isolated blocks, so no interior
+    # faces get culled), and they're TRANSLUCENT — with alpha, every face of a
+    # block renders and you see the back faces through the front ones. A
+    # wireframe box marks the full (T,W,H) canvas extent.
     filled = np.zeros((T, W, H), dtype=bool)
     colors = np.zeros((T, W, H, 4))
     for name, ((t0, t1, h0, h1, w0, w1), c) in REGIONS.items():
         filled[t0:t1, w0:w1, H - h1:H - h0] = True
-        colors[t0:t1, w0:w1, H - h1:H - h0] = matplotlib.colors.to_rgba(c, 1.0)
+        colors[t0:t1, w0:w1, H - h1:H - h0] = matplotlib.colors.to_rgba(c, 0.42)
 
     fig = plt.figure(figsize=(5.4, 4.6))
     ax = fig.add_subplot(111, projection="3d")
     ax.voxels(filled, facecolors=colors,
-              edgecolors=(0.2, 0.2, 0.2, 0.55), linewidth=0.35, shade=True)
+              edgecolors=(0.15, 0.15, 0.15, 0.5), linewidth=0.4, shade=False)
 
     # wireframe of the full (T, W, H) canvas extent so the empty space reads
     corners = [(0, 0, 0), (T, 0, 0), (T, W, 0), (0, W, 0),
@@ -656,9 +708,9 @@ def real_vs_neural():
     R = ["#3a7abf", "#4f9d4f", "#d98a2b", "#8e6fc0"]      # robot colors
     RL = [f"r{i}" for i in range(4)]
 
-    fig = plt.figure(figsize=(12.4, 7.4))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.62],
-                          width_ratios=[1.0, 1.0], hspace=0.14, wspace=0.10,
+    fig = plt.figure(figsize=(12.4, 7.0))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.5],
+                          width_ratios=[1.0, 1.0], hspace=0.12, wspace=0.10,
                           left=0.015, right=0.985, top=0.93, bottom=0.02)
     axW = fig.add_subplot(gs[0, 0])   # real world
     axN = fig.add_subplot(gs[0, 1])   # neural canvas
@@ -785,9 +837,11 @@ def real_vs_neural():
         ('  Connection(src="r0.obs",  dst="dispatch"),', "#6a4fa0"),
         ('])', "#222"),
     ]
+    # tight, code-like line spacing (was airy); block sits centered in the panel
+    dy, y0 = 0.082, 0.80
     for col, lines, x0 in ((0, left, 0.02), (1, right, 0.52)):
         for i, (txt, c) in enumerate(lines):
-            axC.text(x0, 0.90 - i * 0.115, txt, fontsize=8.0,
+            axC.text(x0, y0 - i * dy, txt, fontsize=9.2,
                      family="monospace", va="top", color=c)
     axC.axvline(0.505, color="#dddddd", lw=0.8)
 
@@ -810,8 +864,6 @@ def copies():
         # transfer_distance parked (needs the representation-stability caveat);
         # kept available for a possible interop follow-up thread.
         (os.path.join(fig, "transfer_distance.png"), "transfer_distance.png"),
-        (os.path.join(ass, "looped_attention.png"), "looped_attention.png"),
-        (os.path.join(exa, "08_world_model_minecraft.png"), "minecraft_world_model.png"),
         (os.path.join(exa, "09b_bci_tribe.png"), "bci_tribe.png"),
         (os.path.join(exa, "03_cartpole.png"), "cartpole.png"),
     ]:
@@ -824,7 +876,7 @@ def copies():
 
 if __name__ == "__main__":
     page1()
-    results_table()
+    results_chart()
     rotating_gif()
     attention_mask()
     math_card()

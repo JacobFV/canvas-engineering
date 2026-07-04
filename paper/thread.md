@@ -170,17 +170,21 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 >
 > and to be upfront about what the data does NOT yet show at this scale: no measurable iterative reasoning from looping (it's weight-sharing regularization), and just co-locating modalities on a flat canvas doesn't buy binding — structure has to be declared, not hoped for. which is kind of the whole point
 
-**images (2):**
+**images (1):** the walk-away receipt — recurrence beats scale
 
-| 1. Table 2 crop (loops × freeze grid) | 2. looped attention block diagram |
-|---|---|
-| ![results_table.png](thread_assets/results_table.png) | ![looped_attention.png](thread_assets/looped_attention.png) |
+![results_chart.png](thread_assets/results_chart.png)
 
-<!-- WHY the negative results stay in: pre-empting the "did you test whether it's just
-     regularization?" reply is worth more than a cleaner-looking post. The judo move
-     ("which is kind of the whole point") converts the null into the thesis — mirrors
-     the reframe we did in the paper §5. If engagement data later shows this post kills
-     the thread, the fallback is to merge the caveat sentence into post 9. -->
+<!-- REPLACED the badly-cropped Table 2 screenshot AND the looped-attention block
+     diagram (which communicated nothing) with one clean custom bar chart that carries
+     the actual walk-away: a frozen 350K-param model has the LOWEST action loss — 33×
+     fewer trainable params than the unfrozen 11.7M and still better. That's the receipt
+     readers should leave with, not a raw grid. -->
+<!-- WHY the negative results stay in the TEXT: pre-empting the "did you test whether it's
+     just regularization?" reply is worth more than a cleaner-looking post. The judo move
+     ("which is kind of the whole point") converts the null into the thesis — mirrors the
+     reframe in the paper §5. -->
+<!-- Chart built via the dataviz method: single series (action loss), one accessible hue
+     with the winner highlighted, direct value labels, recessive grid/axis. -->
 
 ---
 
@@ -195,19 +199,24 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 >
 > apache 2.0, published under @commandagi
 
-**images (4):**
+**images (2):**
 
-| 1. cartpole | 2. minecraft world model |
+| 1. cartpole control (real gym env) | 2. BCI decoding on real TRIBE cortical predictions |
 |---|---|
-| ![cartpole.png](thread_assets/cartpole.png) | ![minecraft_world_model.png](thread_assets/minecraft_world_model.png) |
-| **3. BCI + TRIBE** | **4. paper first page again** |
-| ![bci_tribe.png](thread_assets/bci_tribe.png) | ![page1.png](thread_assets/page1.png) |
+| ![cartpole.png](thread_assets/cartpole.png) | ![bci_tribe.png](thread_assets/bci_tribe.png) |
 
-<!-- WHY: the links post doubles as an examples gallery — breadth (control, world models,
-     BCI) signals "this is a library, not a demo." page1 repeats so the paper is attached
-     at both ends of the thread for people who enter mid-thread. -->
-<!-- TODO before posting: paper link; confirm @commandagi is the real X handle;
-     consider a PyPI badge screenshot if the package page looks good by then. -->
+<!-- WHY: the links post doubles as a small examples gallery — two distinct domains
+     (control + neural decoding) signal "this is a library, not a one-trick demo." -->
+<!-- DROPPED "paper first page again" (page1) — repeating the same hero at both ends of
+     the thread is bad taste; the paper link in the text is enough. -->
+<!-- DROPPED minecraft_world_model.png — a static frame of a world-model demo says nothing
+     about the canvas. IDEA for a real replacement: an annotated video of the canvas
+     "thinking" (its region activations) with the input feed overlaid, so you can watch
+     the declared structure light up during rollout. We don't have that asset yet; it
+     needs a running model. Parked as the strongest possible image for this slot. -->
+<!-- NOTE: cartpole/bci_tribe are still repo demo art. Kept because they signal breadth
+     and weren't flagged, but they're candidates to swap for custom diagrams later. -->
+<!-- TODO before posting: paper link; confirm @commandagi is the real X handle. -->
 
 ---
 
