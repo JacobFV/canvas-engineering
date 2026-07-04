@@ -58,20 +58,30 @@ def results_table():
 
 
 def rotating_gif():
+    # Only the allocated regions are filled — solid, opaque blocks. Filling
+    # the whole volume culls interior faces and hides everything but the near
+    # hull, so back faces never render. Solid blocks + a wireframe canvas box
+    # let matplotlib depth-sort every face, front and back.
     filled = np.zeros((T, W, H), dtype=bool)
     colors = np.zeros((T, W, H, 4))
-    # faint shell for unallocated cells
-    filled[:] = True
-    colors[..., :] = (0.93, 0.93, 0.93, 0.08)
     for name, ((t0, t1, h0, h1, w0, w1), c) in REGIONS.items():
-        rgba = matplotlib.colors.to_rgba(c, alpha=0.95)
-        colors[t0:t1, w0:w1, H - h1:H - h0] = rgba
-        # note: flip h so "top" of the 2D layout renders up
+        filled[t0:t1, w0:w1, H - h1:H - h0] = True
+        colors[t0:t1, w0:w1, H - h1:H - h0] = matplotlib.colors.to_rgba(c, 1.0)
 
     fig = plt.figure(figsize=(5.4, 4.6))
     ax = fig.add_subplot(111, projection="3d")
     ax.voxels(filled, facecolors=colors,
-              edgecolors=(0.35, 0.35, 0.35, 0.18), linewidth=0.3)
+              edgecolors=(0.2, 0.2, 0.2, 0.55), linewidth=0.35, shade=True)
+
+    # wireframe of the full (T, W, H) canvas extent so the empty space reads
+    corners = [(0, 0, 0), (T, 0, 0), (T, W, 0), (0, W, 0),
+               (0, 0, H), (T, 0, H), (T, W, H), (0, W, H)]
+    box_edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7),
+                 (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
+    for a, b in box_edges:
+        xs, ys, zs = zip(corners[a], corners[b])
+        ax.plot(xs, ys, zs, color="#aaaaaa", lw=0.8, zorder=0)
+
     ax.set_box_aspect((T, W, H))
     ax.set_xlabel("T (time)", fontsize=9, labelpad=2)
     ax.set_ylabel("W", fontsize=9, labelpad=2)
