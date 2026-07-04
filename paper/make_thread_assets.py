@@ -930,6 +930,201 @@ def real_vs_neural():
     print("wrote real_vs_neural.png")
 
 
+def cortical_circuit():
+    """The declared cortical macrostructure: 7 networks wired by known pathways.
+    You declare the connectome (this graph); gradients tune the synapses.
+    Colors match the connectivity matrix; node shape encodes canvas family."""
+    from matplotlib.patches import FancyArrowPatch, Circle, FancyBboxPatch, Polygon
+    NET = {"visual": "#d1495b", "auditory": "#3a7ca5", "language": "#4f9d4f",
+           "frontal": "#e08b1f", "default": "#8e6fc0", "subcort": "#2a9d8f",
+           "resid": "#8a8a8a"}
+    # name -> (x, y, network, family, label)
+    N = {
+        "v1":        (0.7, 3.1, "visual", "observation", "V1"),
+        "v2_v4":     (1.7, 3.9, "visual", "state", "V2/V4"),
+        "fusiform":  (2.6, 2.7, "visual", "state", "fusiform"),
+        "a1":        (0.8, 1.3, "auditory", "observation", "A1"),
+        "wernicke":  (2.0, 1.1, "auditory", "state", "Wernicke"),
+        "temporal":  (3.1, 0.7, "language", "state", "temporal"),
+        "angular":   (3.4, 2.1, "language", "state", "angular"),
+        "broca":     (4.5, 1.4, "language", "state", "Broca"),
+        "premotor":  (5.7, 3.3, "frontal", "state", "premotor"),
+        "prefront":  (6.7, 2.5, "frontal", "state", "prefrontal"),
+        "motor":     (6.9, 3.9, "frontal", "action", "motor"),
+        "precun":    (4.1, 4.7, "default", "state", "precuneus"),
+        "cingulate": (5.2, 4.9, "default", "state", "cingulate"),
+        "temp_pole": (3.2, 3.7, "default", "memory", "temp. pole"),
+        "insula":    (2.2, 4.5, "subcort", "state", "insula"),
+        "somato":    (5.3, 0.7, "subcort", "observation", "somato"),
+        "pred_err":  (4.2, -0.4, "resid", "residual", "prediction err"),
+    }
+    # (src, dst) drawn in pathway (information-flow) direction
+    solid = [
+        ("v1", "v2_v4"), ("v2_v4", "fusiform"),            # ventral stream
+        ("v1", "angular"), ("angular", "premotor"),         # dorsal stream
+        ("a1", "wernicke"), ("wernicke", "broca"),          # language
+        ("wernicke", "angular"), ("angular", "temporal"),   # semantic
+        ("prefront", "premotor"), ("premotor", "motor"),    # frontal control
+        ("somato", "motor"),                                # sensorimotor
+        ("fusiform", "angular"),                            # cross-modal vis->lang
+        ("insula", "cingulate"),                           # interoception
+    ]
+    dmn = [("precun", "cingulate"), ("cingulate", "temp_pole"),
+           ("temp_pole", "precun")]                         # default-mode loop
+    faint = [("fusiform", "prefront"), ("broca", "prefront"),
+             ("precun", "prefront"), ("temp_pole", "fusiform")]  # executive/memory
+    resid = [("fusiform", "pred_err"), ("wernicke", "pred_err"),
+             ("prefront", "pred_err")]                       # errors -> residual
+
+    fig, ax = plt.subplots(figsize=(9.4, 6.2))
+    ax.set_xlim(-0.6, 7.8); ax.set_ylim(-1.2, 5.7)
+    ax.set_aspect("equal"); ax.axis("off")
+    ax.set_title("the cortex declares its wiring: 23 regions, 42 known "
+                 "pathways\nyou write the connectome — gradients tune the "
+                 "synapses", fontsize=13, weight="bold", pad=8)
+
+    def draw_edge(a, b, color, lw, alpha, rad, z):
+        p, q = (N[a][0], N[a][1]), (N[b][0], N[b][1])
+        ax.add_patch(FancyArrowPatch(p, q, connectionstyle=f"arc3,rad={rad}",
+                     arrowstyle="-|>", mutation_scale=11, color=color, lw=lw,
+                     alpha=alpha, shrinkA=13, shrinkB=13, zorder=z))
+
+    for a, b in resid:
+        ax.add_patch(FancyArrowPatch((N[a][0], N[a][1]), (N[b][0], N[b][1]),
+                     connectionstyle="arc3,rad=0.1", arrowstyle="-|>",
+                     mutation_scale=9, color=NET["resid"], lw=1.0, alpha=0.6,
+                     ls=(0, (3, 2)), shrinkA=13, shrinkB=13, zorder=2))
+    for a, b in faint:
+        draw_edge(a, b, "#c7c7c7", 1.0, 0.8, 0.18, 2)
+    for a, b in dmn:
+        draw_edge(a, b, NET["default"], 1.8, 0.9, 0.25, 4)
+    for a, b in solid:
+        draw_edge(a, b, NET[N[a][2]], 2.0, 0.95, 0.14, 5)
+
+    for name, (x, y, net, fam, label) in N.items():
+        col = NET[net]
+        if fam == "observation":
+            ax.add_patch(Circle((x, y), 0.26, facecolor=col, edgecolor="black",
+                                lw=1.2, zorder=10))
+        elif fam == "action":
+            ax.add_patch(Polygon([(x, y + 0.3), (x + 0.3, y), (x, y - 0.3),
+                                  (x - 0.3, y)], facecolor=col,
+                                 edgecolor="black", lw=1.2, zorder=10))
+        elif fam == "memory":
+            ax.add_patch(Polygon([(x + 0.28 * np.cos(a_), y + 0.28 * np.sin(a_))
+                                  for a_ in np.linspace(0, 2 * np.pi, 7)],
+                                 facecolor=col, edgecolor="black", lw=1.2,
+                                 zorder=10))
+        elif fam == "residual":
+            ax.add_patch(FancyBboxPatch((x - 0.3, y - 0.22), 0.6, 0.44,
+                         boxstyle="round,pad=0.02", facecolor="white",
+                         edgecolor=col, lw=1.6, ls="--", zorder=10))
+        else:  # state
+            ax.add_patch(FancyBboxPatch((x - 0.28, y - 0.22), 0.56, 0.44,
+                         boxstyle="round,pad=0.02,rounding_size=0.08",
+                         facecolor=col, edgecolor="black", lw=1.2, zorder=10))
+        ax.text(x, y - 0.42, label, ha="center", va="top", fontsize=7.6,
+                family="monospace", zorder=11)
+
+    # network legend — single row along the bottom
+    lx = -0.5
+    for net, name in [("visual", "visual"), ("auditory", "auditory"),
+                      ("language", "language"), ("frontal", "frontal"),
+                      ("default", "default-mode"), ("subcort", "subcortical"),
+                      ("resid", "pred. error")]:
+        ax.add_patch(Rectangle((lx, -1.15), 0.24, 0.24, facecolor=NET[net],
+                               edgecolor="black", lw=0.4, clip_on=False))
+        ax.text(lx + 0.31, -1.03, name, fontsize=7.6, va="center")
+        lx += 1.16
+    # family shape key — drawn icons in the empty upper-left
+    kx, ky = -0.35, 5.15
+    ax.add_patch(Circle((kx, ky), 0.15, facecolor="#bbb", edgecolor="black", lw=1))
+    ax.text(kx + 0.28, ky, "observation", fontsize=7.6, va="center")
+    ax.add_patch(FancyBboxPatch((kx - 0.16, ky - 0.55), 0.32, 0.3,
+                 boxstyle="round,pad=0.01,rounding_size=0.05", facecolor="#bbb",
+                 edgecolor="black", lw=1))
+    ax.text(kx + 0.28, ky - 0.4, "state", fontsize=7.6, va="center")
+    ax.add_patch(Polygon([(kx, ky - 0.7), (kx + 0.17, ky - 0.9),
+                          (kx, ky - 1.1), (kx - 0.17, ky - 0.9)],
+                         facecolor="#bbb", edgecolor="black", lw=1))
+    ax.text(kx + 0.28, ky - 0.9, "action", fontsize=7.6, va="center")
+    ax.add_patch(Polygon([(kx + 0.16 * np.cos(a_), ky - 1.35 + 0.16 * np.sin(a_))
+                          for a_ in np.linspace(0, 2 * np.pi, 7)],
+                         facecolor="#bbb", edgecolor="black", lw=1))
+    ax.text(kx + 0.28, ky - 1.35, "memory", fontsize=7.6, va="center")
+    ax.add_patch(FancyBboxPatch((kx - 0.16, ky - 1.95), 0.32, 0.3,
+                 boxstyle="round,pad=0.01", facecolor="white", edgecolor="#888",
+                 lw=1.4, ls="--"))
+    ax.text(kx + 0.28, ky - 1.8, "residual", fontsize=7.6, va="center")
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "cortical_circuit.png"),
+                bbox_inches="tight", facecolor="white", dpi=190)
+    plt.close(fig)
+    print("wrote cortical_circuit.png")
+
+
+def brain_results():
+    # Honest framing: the cortical wiring MATCHES a dense model while using
+    # 19.6% of the connections and training ~5x faster. Topology is a
+    # convergence/efficiency prior, not an accuracy win. (BCI is a real win.)
+    ink, muted = "#2a2f36", "#6b7580"
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(9.6, 4.4),
+                                   gridspec_kw={"width_ratios": [1.15, 1.0]})
+
+    # LEFT: R^2 parity (cortical ~ dense) with the efficiency gap called out
+    names = ["cortical\n19.6% wired", "dense\n100% wired"]
+    r2 = [0.825, 0.826]
+    bars = axL.bar([0, 1], r2, width=0.6, color=["#1f9e7a", "#9aa7b0"], zorder=3)
+    for i, v in enumerate(r2):
+        axL.text(i, v + 0.006, f"$R^2$={v:.3f}", ha="center", fontsize=11.5,
+                 fontweight="bold" if i == 0 else "normal",
+                 color=ink if i == 0 else muted)
+    axL.set_ylim(0, 0.95)
+    axL.set_xticks([0, 1]); axL.set_xticklabels(names, fontsize=10, color=ink)
+    axL.set_yticks([0, 0.4, 0.8])
+    axL.tick_params(length=0, labelcolor=muted)
+    for s in ("top", "right", "left"):
+        axL.spines[s].set_visible(False)
+    axL.spines["bottom"].set_color("#cfd4d9")
+    axL.grid(axis="y", color="#eef1f3", lw=1.0, zorder=0); axL.set_axisbelow(True)
+    axL.annotate("same accuracy\n5× faster\n1/5 the wiring",
+                 xy=(0.02, 0.80), xytext=(0.5, 0.35), fontsize=9, color="#1f9e7a",
+                 fontweight="bold", ha="center", va="center",
+                 arrowprops=dict(arrowstyle="-|>", color="#1f9e7a", lw=1.5,
+                                 connectionstyle="arc3,rad=0.25"))
+    axL.set_title("predicting real TRIBE v2 cortical dynamics\n"
+                  "(135 features, next-timestep)", fontsize=10.5, color=ink)
+
+    # RIGHT: BCI decoding — a genuine accuracy win
+    bn = ["canvas\ndecoder", "SVM", "chance"]
+    acc = [68.8, 59.4, 25.0]
+    axR.bar([0, 1, 2], acc, width=0.6,
+            color=["#1f9e7a", "#9aa7b0", "#d7dce0"], zorder=3)
+    for i, v in enumerate(acc):
+        axR.text(i, v + 1.5, f"{v:.0f}%", ha="center", fontsize=11.5,
+                 fontweight="bold" if i == 0 else "normal",
+                 color=ink if i == 0 else muted)
+    axR.set_ylim(0, 82)
+    axR.set_xticks([0, 1, 2]); axR.set_xticklabels(bn, fontsize=10, color=ink)
+    axR.set_yticks([0, 25, 50, 75])
+    axR.tick_params(length=0, labelcolor=muted)
+    for s in ("top", "right", "left"):
+        axR.spines[s].set_visible(False)
+    axR.spines["bottom"].set_color("#cfd4d9")
+    axR.grid(axis="y", color="#eef1f3", lw=1.0, zorder=0); axR.set_axisbelow(True)
+    axR.set_title("BCI decoding from virtual EEG\n(4-way, real cortical "
+                  "predictions)", fontsize=10.5, color=ink)
+
+    fig.suptitle("the cortical canvas: topology is a convergence prior, "
+                 "not a capacity win", fontsize=12.5, weight="bold", y=1.02)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "brain_results.png"),
+                bbox_inches="tight", facecolor="white", dpi=190)
+    plt.close(fig)
+    print("wrote brain_results.png")
+
+
 def copies():
     fig = os.path.join(HERE, "figures")
     ass = os.path.join(HERE, "..", "assets")
@@ -943,6 +1138,11 @@ def copies():
         (os.path.join(fig, "transfer_distance.png"), "transfer_distance.png"),
         (os.path.join(exa, "09b_bci_tribe.png"), "bci_tribe.png"),
         (os.path.join(exa, "03_cartpole.png"), "cartpole.png"),
+        # brain assets (existing renders) for the cortical post
+        (os.path.join(HERE, "..", "presentation", "assets",
+                      "connectivity_matrix.png"), "connectivity_matrix.png"),
+        (os.path.join(HERE, "..", "presentation", "assets",
+                      "brain_left_lateral.png"), "brain_surface.png"),
     ]:
         if os.path.exists(src):
             shutil.copy(src, os.path.join(OUT, dst))
@@ -963,5 +1163,7 @@ if __name__ == "__main__":
     stagger_multi_agent()
     stagger_icu_all()
     real_vs_neural()
+    cortical_circuit()
+    brain_results()
     copies()
     print("\nassets in", OUT)

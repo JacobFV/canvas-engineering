@@ -291,11 +291,12 @@ def fig_icu_allocation():
 
     h_max = max((s.bounds if hasattr(s, "bounds") else s)[3]
                 for s in lay.regions.values())
-    fig = plt.figure(figsize=(10.4, 6.1))
-    gs = fig.add_gridspec(1, 2, width_ratios=[0.66, 1.0], wspace=0.10,
-                          left=0.02, right=0.90, top=0.93, bottom=0.13)
+    fig = plt.figure(figsize=(13.6, 6.1))
+    gs = fig.add_gridspec(1, 3, width_ratios=[0.60, 0.72, 1.0], wspace=0.08,
+                          left=0.015, right=0.90, top=0.93, bottom=0.13)
     axC = fig.add_subplot(gs[0])
-    ax = fig.add_subplot(gs[1])
+    axD = fig.add_subplot(gs[1])           # the causal graph the schema denotes
+    ax = fig.add_subplot(gs[2])
     ax.set_xlim(0, W); ax.set_ylim(h_max + 1.2, 0)
     ax.set_aspect("equal")
     ax.set_xticks([]); ax.set_yticks([])
@@ -350,7 +351,64 @@ def fig_icu_allocation():
         color = "#7a2f8f" if kind == "kw" else "#222222"
         axC.text(0.035, i, text, fontsize=6.6, family="monospace",
                  va="center", color=color, zorder=3)
-    axC.set_title("the schema (examples/07_hospital_icu.py)", fontsize=9)
+    axC.set_title("1. the schema  (compositional pydantic)", fontsize=9)
+
+    # ---- middle panel: the causal graph the schema denotes ----
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+    axD.set_xlim(0, 10); axD.set_ylim(0, 12.4); axD.axis("off")
+    axD.set_title("2. the causal graph it denotes", fontsize=9)
+    GC = {"ward": "#9a9a9a", "patient": "#6fa8dc", "nurse": "#93c47d",
+          "bureau": "#e8b04c", "family": "#c27ba0", "organ": "#bcd6ef"}
+    DN = {  # name -> (x, y, color, label)
+        "ward":    (5.0, 11.4, "ward", "ward.acuity"),
+        "patient": (5.0, 9.0, "patient", "patients[i]"),
+        "nurse":   (1.3, 10.2, "nurse", "nurses[j]"),
+        "bureau":  (8.7, 11.0, "bureau", "bureaucratic"),
+        "family":  (1.2, 6.6, "family", "families[i]"),
+        "renal":   (1.6, 4.6, "organ", "renal"),
+        "cardio":  (4.0, 4.6, "organ", "cardio"),
+        "neuro":   (6.4, 4.6, "organ", "neuro"),
+        "resp":    (8.6, 6.6, "organ", "resp"),
+        "risk":    (5.0, 1.6, "patient", "deterioration\nrisk"),
+    }
+
+    def dnode(key, w=1.9, h=0.9, fs=6.6):
+        x, y, c, lab = DN[key]
+        axD.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h,
+                      boxstyle="round,pad=0.03,rounding_size=0.12",
+                      facecolor=GC[c], edgecolor="black", lw=0.9, zorder=5))
+        axD.text(x, y, lab, ha="center", va="center", fontsize=fs,
+                 family="monospace", zorder=6,
+                 color="white" if c in ("patient",) else "black")
+
+    def dedge(a, b, color="#8a8a8a", lw=1.2, rad=0.0, z=3, ls="-"):
+        (xa, ya), (xb, yb) = DN[a][:2], DN[b][:2]
+        axD.add_patch(FancyArrowPatch((xa, ya), (xb, yb), arrowstyle="-|>",
+                      connectionstyle=f"arc3,rad={rad}", mutation_scale=9,
+                      color=color, lw=lw, ls=ls, shrinkA=13, shrinkB=13, zorder=z))
+
+    # composition / coordination edges (gray)
+    dedge("patient", "ward", rad=0.0)
+    dedge("bureau", "ward", rad=-0.15)
+    dedge("nurse", "patient", "#3a7d3a", lw=1.8, rad=-0.1)   # nurse acts on patient
+    dedge("family", "patient", rad=0.15)
+    for org in ("renal", "cardio", "neuro", "resp"):
+        dedge("patient", org, rad=0.0, ls=(0, (3, 2)), lw=0.9)  # contains
+    # the declared sepsis pathway (highlighted red)
+    dedge("renal", "cardio", "#c0392b", lw=2.2, rad=0.15, z=7)
+    dedge("cardio", "neuro", "#c0392b", lw=2.2, rad=0.15, z=7)
+    dedge("neuro", "risk", "#c0392b", lw=2.2, rad=-0.1, z=7)
+    for key in DN:
+        dnode(key)
+    axD.text(5.0, 0.35, "red = declared sepsis pathway\n"
+             "renal $\\rightarrow$ cardio $\\rightarrow$ neuro $\\rightarrow$ risk",
+             ha="center", va="center", fontsize=6.6, color="#c0392b")
+    # "compiles to" / "flattens to" arrows in the gaps between the panels
+    for gx, lab in ((0.243, "compiles\nto"), (0.508, "flattens\nto")):
+        fig.text(gx, 0.60, "$\\Rightarrow$", ha="center", va="center",
+                 fontsize=18, color="#555")
+        fig.text(gx, 0.50, lab, ha="center", va="center", fontsize=8,
+                 color="#555")
 
     counts = {"patient": 6, "nurse": 4, "family": 6,
               "bureaucratic": 1, "ward": 1}
@@ -403,22 +461,11 @@ def fig_icu_allocation():
                     arrowprops=dict(arrowstyle="-|>", lw=1.3, color=edge_color))
         return hs, ws
 
-    from matplotlib.patches import ConnectionPatch
     extents = {}
     extents["patient"] = entity_outline("patients[2]", "#1a3f6f",
                                         "this is patients[2]", (W + 0.7, 6.0))
     extents["nurse"] = entity_outline("nurses[1]", "#1e5c1e",
                                       "this is nurses[1]", (W + 0.7, h_max - 2.0))
-    # dashed connectors: instance line in the schema -> its blocks on canvas
-    for ent, line_i in anchors.items():
-        hs, ws = extents[ent]
-        row = hs.min()
-        target = (float(ws[hs == row].min()), float(row) + 0.5)
-        fig.add_artist(ConnectionPatch(
-            xyA=(0.985, line_i), coordsA=axC.transData,
-            xyB=target, coordsB=ax.transData,
-            arrowstyle="-|>", mutation_scale=10, lw=1.2,
-            linestyle=(0, (4, 2)), color=HL_EDGE[ent], zorder=8))
     for spine in ax.spines.values():
         spine.set_edgecolor("#888888")
 
@@ -439,9 +486,8 @@ def fig_icu_allocation():
               "coarse-grained field (auto-inserted)"]
     fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.005),
                ncol=3, fontsize=7.4, frameon=False)
-    ax.set_title(f"compile_schema(ward, H=26, W=26) $\\rightarrow$ "
-                 f"{len(lay.regions)} regions, {n_conn} connections",
-                 fontsize=9)
+    ax.set_title(f"3. the canvas  ({len(lay.regions)} regions, "
+                 f"{n_conn} connections, auto-packed)", fontsize=9)
     fig.savefig(os.path.join(FIGDIR, "fig_icu_allocation.png"),
                 bbox_inches="tight", facecolor="white")
     plt.close(fig)

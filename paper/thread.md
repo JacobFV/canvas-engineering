@@ -3,12 +3,15 @@
 Quote-tweet of: https://x.com/fchollet/status/2072779641639875048
 All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_thread_assets.py` (and `make_paper_figures.py` for the paper figures they copy).
 
-<!-- WHY THIS STRUCTURE: post 1 hooks with the neurosymbolic framing + names the thing;
-     2-3 explain the mechanism (the load-bearing claim is in 3); 4 grounds in a known
-     baseline (diffusion policy) so readers can anchor; 5-6 are the compiler + pointability
-     payoff (the most shareable material); 7 is receipts + honest limits; 8 links; 9 the
-     confession. Front-load mechanism before results because this audience (fchollet QT
-     readers) cares about the idea's shape more than the numbers. -->
+<!-- WHY THIS STRUCTURE (10 posts): 1 hooks with the neurosymbolic framing + names the
+     thing; 2-3 explain the mechanism (the load-bearing claim is in 3); 4 grounds in a
+     known baseline (diffusion policy); 5-6 are the compiler + "every edge is a causal
+     choice" payoff (the most shareable material); 7 is the brain existence-proof (the
+     emotional/visionary peak — connectome=topology, plasticity=weights, backed by a real
+     R²=0.825 experiment); 8 is receipts + honest limits; 9 links; 10 the confession.
+     Front-load mechanism before results because this audience (fchollet QT readers) cares
+     about the idea's shape more than the numbers. The brain post sits at 7, not 1, because
+     the connectivity-matrix-is-an-attention-mask point only lands after the mask idea. -->
 
 ---
 
@@ -111,7 +114,7 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 **images (2):**
 
-| 1. real ↔ neural: 4 robots in a field, the CanvasLayout+CanvasTopology, and the canvas the compiler builds | 2. it scales: one schema instance → 199 packed ICU regions |
+| 1. real ↔ neural: 4 robots in a field, the CanvasLayout+CanvasTopology, and the canvas the compiler builds | 2. schema → the causal graph it denotes → 199 packed ICU regions |
 |---|---|
 | ![real_vs_neural.png](thread_assets/real_vs_neural.png) | ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) |
 
@@ -128,10 +131,11 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 <!-- DROPPED the ward-monitor gif — it was eye-candy that showed a dashboard, not the
      canvas idea; it competed with the allocation figure for attention and pulled the
      post off-message. The "what the edges mean" story now lives in post 6 with the
-<!-- DROPPED the ward-monitor gif — it was eye-candy that showed a dashboard, not the
-     canvas idea; it competed with the allocation figure for attention and pulled the
-     post off-message. The "what the edges mean" story now lives in post 6 with the
      stagger diagrams, which is a stronger use of that slot. -->
+<!-- NOTE: fig_icu_allocation is now a THREE-panel pipeline — schema (compositional
+     pydantic) -> the causal graph it denotes (with the declared sepsis pathway
+     highlighted) -> the auto-packed canvas. The middle panel renders the "compiler
+     flattens the graph your schema represents" step that was [needs work] in the draft. -->
 
 ---
 
@@ -166,6 +170,42 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 ## 7/
 
+> here's the part that made me build this in the first place: the cortex already works this way. its macro-wiring — which region talks to which — is largely specified by the connectome, fixed. the micro-weights are learned by synaptic plasticity over a lifetime. fixed topology + learned weights. that's the exact split canvas engineering makes
+>
+> and the cortical connectivity matrix from post 2? it's the SAME object as a canvas attention mask — source × destination, block-diagonal within a network, sparse specific cross-network edges, every cell an operator type. the connectome IS a canvas topology
+>
+> so we wired 23 Destrieux regions by 42 known cortical pathways (ventral visual stream, A1→Wernicke→Broca, prefrontal→premotor→motor, default-mode loop) and trained it on real TRIBE v2 cortical predictions. it hits R²=0.825 on next-timestep dynamics — matching a fully-dense model at 19.6% of the connections and 5× faster. topology is a convergence prior, not a capacity win (a dense net gets there too, just slower — exactly like the connectome accelerates development without setting the ceiling). a canvas EEG decoder also beats an SVM 69% vs 59%
+>
+> (and yeah — the shape is suggestive: cortex clamps sensory input and generates internally when the thalamic gate opens, which rhymes with clamp-context / denoise-future. i'm NOT claiming the cortex runs reverse diffusion. just that the structure rhymes, and now you can declare that structure on anything)
+
+**images (4):**
+
+| 1. you declare the connectome; SGD tunes the synapses | 2. the cortical connectivity matrix = a canvas attention mask |
+|---|---|
+| ![cortical_circuit.png](thread_assets/cortical_circuit.png) | ![connectivity_matrix.png](thread_assets/connectivity_matrix.png) |
+| **3. predicts real TRIBE v2 cortical dynamics — convergence prior, not capacity win** | **4. the canvas regions ARE cortical areas (on a real brain)** |
+| ![brain_results.png](thread_assets/brain_results.png) | ![brain_surface.png](thread_assets/brain_surface.png) |
+
+<!-- WHY this post exists (user's strongest under-used asset): the brain is the existence
+     proof for "declared macro-topology + learned micro-weights," and it comes with a REAL
+     experiment, which almost no brain-inspired pitch has. Placed here (not /1) deliberately:
+     the connectivity-matrix-is-an-attention-mask point only lands AFTER the reader has seen
+     the mask idea in post 2. -->
+<!-- DISCIPLINE (per the pushback we agreed on): amplify the two things with evidence — the
+     matrix=mask structural correspondence and R²=0.825-matching-dense-at-19.6% — and starve
+     the one without. NO free-energy-principle-as-mechanism. The thalamocortical line is the
+     ONE speculative sentence, explicitly flagged "i'm NOT claiming... just that it rhymes."
+     Do not let anyone edit that hedge out. -->
+<!-- HONESTY: the win is efficiency/convergence, NOT accuracy — a dense net matches it and a
+     flat MLP beat it on the easy task. Numbers from research/brain/NOTES.md. If you overstate
+     "brain topology wins," a critic opens the repo and quotes the flat-MLP line back. -->
+<!-- Image 2 (connectivity_matrix.png) is the hero — same axes as attention_mask.png from
+     post 2. If you want the pairing explicit, quote-embed post 2's mask beside it. -->
+
+---
+
+## 8/
+
 > receipts so far (26 experiments, 236 training runs on CogVideoX-2B + Bridge V2): looped attention gives 1.73x parameter efficiency (p<0.001), and a frozen 350K-param config beats 11.7M unfrozen params on action prediction
 >
 > and to be upfront about what the data does NOT yet show at this scale: no measurable iterative reasoning from looping (it's weight-sharing regularization), and just co-locating modalities on a flat canvas doesn't buy binding — structure has to be declared, not hoped for. which is kind of the whole point
@@ -188,7 +228,7 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 ---
 
-## 8/
+## 9/
 
 > everything is open:
 >
@@ -220,7 +260,7 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 ---
 
-## 9/
+## 10/
 
 > and tbh sorry for "introducing" this like it's brand new. i actually built it jan–mar and perpetually held back bc "it's not ready yet" lol. it's still early and there's real open problems (representation stability is the linchpin — it's all specified and awaiting compute). but it introduces ideas i'm not seeing in the july 2026 discourse, so here it is. would rather run the experiments in public than polish in private. enjoy!
 
@@ -240,8 +280,10 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 ## posting checklist
 
-- [ ] fill paper link in 8/
+- [ ] fill paper link in 9/ (the links post)
 - [ ] verify @commandagi handle exists on X
-- [x] GIFs under X's 15MB limit (canvas_rotating 5.4MB, icu_ward_monitor 3.2MB, vehicle_fleet 0.8MB)
+- [x] GIFs under X's 15MB limit (canvas_rotating 4.0MB)
 - [ ] post 1 must be a QUOTE of the fchollet tweet, not a reply
+- [ ] post 7: keep the thalamocortical hedge intact ("i'm NOT claiming... just that it rhymes") — no FEP-as-mechanism
+- [ ] post 7 image 2: consider quote-embedding post 2's attention_mask beside the connectivity matrix to make "same object" explicit
 - [ ] alt text: each image list above doubles as alt-text draft
