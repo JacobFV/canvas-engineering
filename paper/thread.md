@@ -44,22 +44,22 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 >
 > but instead of uniform reverse diffusion over a flat bag of tokens, the connectivity you declared means only specific blocks are even *allowed* to influence each other (attention, not conv). that hard constraint induces a causal graph inside the reverse diffusion dynamics — an interaction graph you define explicitly
 
-**images (4):**
+**images (3):**
 
-| 1. declarations → compiled canvas + overlaid connection arrows | 2. the five time slices of the same layout |
-|---|---|
-| ![code_to_canvas.png](thread_assets/code_to_canvas.png) | ![fig_layout_example.png](thread_assets/fig_layout_example.png) |
-| **3. the topology compiled to an attention mask** | **4. the five topology constructors** |
-| ![attention_mask.png](thread_assets/attention_mask.png) | ![fig_topology.png](thread_assets/fig_topology.png) |
+| 1. declarations → compiled canvas + overlaid connection arrows | 2. the five time slices of the same layout | 3. the topology compiled to an attention mask |
+|---|---|---|
+| ![code_to_canvas.png](thread_assets/code_to_canvas.png) | ![fig_layout_example.png](thread_assets/fig_layout_example.png) | ![attention_mask.png](thread_assets/attention_mask.png) |
 
-<!-- WHY: this is the "how it works" post so it carries the full pipeline in pictures:
-     code -> canvas -> mask -> constructor vocabulary. code_to_canvas goes first because
-     it fuses the declaration and the artifact in one image (user's request; it's also
-     the clearest single explainer we have). -->
-<!-- attention_mask is drawn at one-cell-per-region-frame (11x11), not the true 320x320 —
-     the true mask is 97% visual-block and unreadable at timeline size. Caption inside
-     the image says so ("one cell per region-frame"), so it's honest. Revisit if anyone
-     reads it as the raw mask. -->
+<!-- WHY: this is the "how it works" post so it carries the pipeline in pictures:
+     code -> canvas -> compiled mask. code_to_canvas goes first because it fuses the
+     declaration and the artifact in one image (user's request; clearest single
+     explainer we have). -->
+<!-- DROPPED fig_topology.png (the five constructors) here — per the user it's more a
+     note on useful construction primitives than part of the core "how it works" story,
+     and it diluted the pipeline. It stays as Figure 2 in the paper. -->
+<!-- attention_mask is now the honest two-panel version: region-structure grid (with
+     true block shapes + the visual/action asymmetry) plus the real mask on a broken
+     axis that admits the 164 skipped visual positions. -->
 
 ---
 
@@ -105,17 +105,29 @@ All images live in `paper/thread_assets/`. Regenerate with `python3 paper/make_t
 
 ## 5/
 
-> and you don't place rectangles by hand. you write the causal structure as a typed schema and the compiler flattens the graph it represents into the canvas
+> and you don't place rectangles by hand. you write the causal structure as a typed schema — the SAME structure that lives in the real world lives in the canvas. a robot's observation→action is a vision cone and a motion out in the field, and an obs→action edge on the canvas. you declare it once; the compiler flattens the graph into regions and attention masks
 >
-> this is a full hospital ICU ward: 6 patients with organ-level physiology, 4 nurses with fatigue dynamics, insurance/staffing pressure, families. one compile_schema() call → 199 regions, 1,077 connections, auto-packed. heart_rate updates every frame, creatinine every 24. the sepsis pathway (renal → cardiovascular → neuro → deterioration_risk) is *declared*, not hoped for
+> and it scales: this is a full hospital ICU ward — 6 patients with organ-level physiology, 4 nurses with fatigue dynamics, insurance/staffing pressure, families. one compile_schema() call → 199 regions, 1,077 connections, auto-packed. heart_rate updates every frame, creatinine every 24. the sepsis pathway (renal → cardiovascular → neuro → deterioration_risk) is *declared*, not hoped for
 
-**images (1):** schema source → compiled 26×26 canvas, with entity outlines
+**images (2):**
 
-![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png)
+| 1. real ↔ neural: 4 robots in a field, the CanvasLayout+CanvasTopology, and the canvas the compiler builds | 2. it scales: one schema instance → 199 packed ICU regions |
+|---|---|
+| ![real_vs_neural.png](thread_assets/real_vs_neural.png) | ![fig_icu_allocation.png](thread_assets/fig_icu_allocation.png) |
 
-<!-- WHY: the ICU is the flagship for a reason — medicine makes "declared causal
-     pathway" viscerally legible to non-robotics readers. This post is the COMPILER
-     payoff: one schema instance in, 199 packed regions out. -->
+<!-- WHY image 1 (real_vs_neural, user request): the strongest single argument for the
+     whole approach is that the causal structure in the physical world (robot sees →
+     robot acts, coordinate through a shared task) and the neural structure on the canvas
+     (obs region → act region, route through dispatch) are the SAME graph — and you wrote
+     it. Showing the world scene, the CanvasLayout/CanvasTopology code, and the compiled
+     canvas together makes "declared causal structure" concrete instead of abstract. -->
+<!-- WHY image 2: the ICU is the flagship — medicine makes "declared causal pathway"
+     viscerally legible, and it shows the same idea holds at 199 regions, not just 4.
+     Order is concept-then-scale: robots teach the correspondence, ICU shows it doesn't
+     fall over. -->
+<!-- DROPPED the ward-monitor gif — it was eye-candy that showed a dashboard, not the
+     canvas idea; it competed with the allocation figure for attention and pulled the
+     post off-message. The "what the edges mean" story now lives in post 6 with the
 <!-- DROPPED the ward-monitor gif — it was eye-candy that showed a dashboard, not the
      canvas idea; it competed with the allocation figure for attention and pulled the
      post off-message. The "what the edges mean" story now lives in post 6 with the

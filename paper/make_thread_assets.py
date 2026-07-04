@@ -304,13 +304,13 @@ def schema_json():
         ('// two models sharing this file can exchange latent state', "#7a7a7a"),
         ('// directly. no tokenization. no re-encoding.', "#7a7a7a"),
     ]
-    fig, ax = plt.subplots(figsize=(6.8, 4.6))
+    fig, ax = plt.subplots(figsize=(7.4, 4.9))
     ax.axis("off")
     ax.set_xlim(0, 1); ax.set_ylim(len(lines) + 0.5, -1.2)
     ax.add_patch(Rectangle((0, -0.9), 1, len(lines) + 1.1,
                            facecolor="#f7f7f7", edgecolor="#cccccc", lw=0.8))
     for i, (txt, col) in enumerate(lines):
-        ax.text(0.025, i, txt, fontsize=8.6, family="monospace",
+        ax.text(0.025, i, txt, fontsize=10.5, family="monospace",
                 va="center", color=col)
     fig.tight_layout()
     fig.savefig(os.path.join(OUT, "schema_json.png"),
@@ -463,7 +463,7 @@ def render_stagger(regions, edges, highlight, annotation, title, outfile,
                                lw=0.8, zorder=1 + f * 3))
         tlab = ["$t{-}1$", "$t$", "$t{+}1$"][f] if frames == 3 else f"$t{{+}}{f}$"
         ax.text(x0 + Wc / 2, y0 + Hc + 0.9, tlab, ha="center", va="top",
-                fontsize=9, color="#666666")
+                fontsize=13, color="#555555")
 
     hl = next((e for e in edges if e["id"] == highlight), None)
 
@@ -507,7 +507,7 @@ def render_stagger(regions, edges, highlight, annotation, title, outfile,
             if f == frames - 1:
                 cx, cy = _center(reg, f, sx, sy)
                 ax.text(cx, cy, reg["label"], ha="center", va="center",
-                        fontsize=7.6, family="monospace", zorder=60,
+                        fontsize=11, family="monospace", zorder=60, weight="bold",
                         color="white" if reg.get("dark") else "black")
 
     hmid = None
@@ -522,21 +522,25 @@ def render_stagger(regions, edges, highlight, annotation, title, outfile,
                 if f == 0:
                     hmid = (p, q)
 
-    # annotation box with a leader to the highlighted edge midpoint
+    # annotation box with a leader to the highlighted edge midpoint. wrap the
+    # text to a narrow width and use a large font so it stays legible when X
+    # tiles four images into a 2x2 grid.
     if annotation and hmid is not None:
+        import textwrap
         (px, py), (qx, qy) = hmid
         mx, my = (px + qx) / 2, (py + qy) / 2
+        wrapped = "\n".join(textwrap.wrap(annotation, width=42))
         ax.annotate(
-            annotation, xy=(mx, my),
-            xytext=(0.5, -0.14), textcoords="axes fraction",
-            ha="center", va="top", fontsize=8.8,
-            bbox=dict(boxstyle="round,pad=0.5", fc="#fff6e6",
-                      ec=hl.get("color", "#cf3a3a"), lw=1.2),
-            arrowprops=dict(arrowstyle="-|>", lw=1.3,
+            wrapped, xy=(mx, my),
+            xytext=(0.5, -0.16), textcoords="axes fraction",
+            ha="center", va="top", fontsize=13, linespacing=1.25,
+            bbox=dict(boxstyle="round,pad=0.6", fc="#fff6e6",
+                      ec=hl.get("color", "#cf3a3a"), lw=1.6),
+            arrowprops=dict(arrowstyle="-|>", lw=1.6,
                             color=hl.get("color", "#cf3a3a"),
                             connectionstyle="arc3,rad=0.15"))
 
-    ax.set_title(title, fontsize=10.5, pad=8)
+    ax.set_title(title, fontsize=13.5, pad=8, weight="bold")
     ax.autoscale_view()
     ax.margins(0.05)
     fig.tight_layout()
@@ -644,13 +648,163 @@ def stagger_icu_all():
         "stagger_icu_persist.png")
 
 
+def real_vs_neural():
+    """Same causal structure, two depictions: the physical scene (robots
+    observing and acting in a field) and the neural canvas the compiler builds
+    from the declared schema, with matching obs->act and coordination edges."""
+    from matplotlib.patches import FancyBboxPatch, Wedge, FancyArrowPatch
+    R = ["#3a7abf", "#4f9d4f", "#d98a2b", "#8e6fc0"]      # robot colors
+    RL = [f"r{i}" for i in range(4)]
+
+    fig = plt.figure(figsize=(12.4, 7.4))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.62],
+                          width_ratios=[1.0, 1.0], hspace=0.14, wspace=0.10,
+                          left=0.015, right=0.985, top=0.93, bottom=0.02)
+    axW = fig.add_subplot(gs[0, 0])   # real world
+    axN = fig.add_subplot(gs[0, 1])   # neural canvas
+    axC = fig.add_subplot(gs[1, :])   # code, full width
+
+    # ---------- REAL WORLD ----------
+    axW.set_xlim(0, 10); axW.set_ylim(0, 7.4); axW.set_aspect("equal")
+    axW.axis("off")
+    axW.add_patch(Rectangle((0, 0), 10, 7.4, facecolor="#eef4ea",
+                            edgecolor="#c8d6bf", lw=1.0))
+    axW.set_title("the real world: what the causal structure IS",
+                  fontsize=11, pad=6)
+    target = (5.0, 3.9)
+    axW.plot(*target, marker="*", ms=26, color="#d4af37",
+             markeredgecolor="#8a6d00", mew=0.8, zorder=5)
+    axW.text(target[0], target[1] - 0.75, "shared task", ha="center",
+             fontsize=8.5, color="#7a5c00")
+    robots = [(2.0, 1.8), (8.0, 1.9), (2.2, 5.5), (7.8, 5.4)]
+    for i, (rx, ry) in enumerate(robots):
+        ang = np.degrees(np.arctan2(target[1] - ry, target[0] - rx))
+        # vision cone (observation)
+        axW.add_patch(Wedge((rx, ry), 2.4, ang - 26, ang + 26,
+                            facecolor=R[i], alpha=0.16, edgecolor="none",
+                            zorder=2))
+        # action arrow (motion toward the task)
+        dx, dy = np.cos(np.radians(ang)), np.sin(np.radians(ang))
+        axW.add_patch(FancyArrowPatch((rx, ry), (rx + 1.5 * dx, ry + 1.5 * dy),
+                                      arrowstyle="-|>", mutation_scale=16,
+                                      color=R[i], lw=2.4, zorder=4))
+        # robot body
+        axW.add_patch(FancyBboxPatch((rx - 0.42, ry - 0.32), 0.84, 0.64,
+                                     boxstyle="round,pad=0.02,rounding_size=0.12",
+                                     facecolor=R[i], edgecolor="black", lw=1.0,
+                                     zorder=6))
+        axW.text(rx, ry, RL[i], ha="center", va="center", color="white",
+                 fontsize=8.5, fontweight="bold", family="monospace", zorder=7)
+    # coordination ring (robots share the task, not each other directly)
+    for a, b in [(0, 1), (1, 3), (3, 2), (2, 0)]:
+        axW.add_patch(FancyArrowPatch(robots[a], robots[b], arrowstyle="-",
+                                      color="#9a9a9a", lw=1.0, ls=(0, (4, 3)),
+                                      zorder=1))
+    # exemplar labels on r0
+    axW.annotate("observation\n(vision cone)", xy=(2.9, 3.0), xytext=(0.2, 6.7),
+                 fontsize=8, color=R[0], ha="left",
+                 arrowprops=dict(arrowstyle="-", lw=0.8, color=R[0]))
+    axW.annotate("action\n(how it moves)", xy=(2.9, 2.4), xytext=(3.4, 0.35),
+                 fontsize=8, color=R[0], ha="center",
+                 arrowprops=dict(arrowstyle="-", lw=0.8, color=R[0]))
+
+    # ---------- NEURAL CANVAS ----------
+    axN.set_xlim(0, 10); axN.set_ylim(0, 7.4); axN.set_aspect("equal")
+    axN.axis("off")
+    axN.add_patch(Rectangle((0, 0), 10, 7.4, facecolor="#fbfbfb",
+                            edgecolor="#d8d8d8", lw=1.0))
+    axN.set_title("the neural canvas: what the compiler builds",
+                  fontsize=11, pad=6)
+    # dispatch (shared task) in the middle
+    disp = (5.0, 3.7)
+    axN.add_patch(Rectangle((disp[0] - 0.9, disp[1] - 0.7), 1.8, 1.4,
+                            facecolor="#8e7cc3", edgecolor="black", lw=1.0,
+                            zorder=6))
+    axN.text(*disp, "dispatch", ha="center", va="center", color="white",
+             fontsize=7.6, family="monospace", zorder=7)
+    # robot region groups, positions mirroring the field
+    grp = [(1.9, 1.6), (8.1, 1.6), (1.9, 5.6), (8.1, 5.6)]
+    for i, (gx, gy) in enumerate(grp):
+        # obs sub-block (light) over act sub-block (dark)
+        axN.add_patch(Rectangle((gx - 1.0, gy + 0.05), 2.0, 0.95,
+                                facecolor=R[i], alpha=0.35, edgecolor="black",
+                                lw=0.8, zorder=5))
+        axN.add_patch(Rectangle((gx - 1.0, gy - 1.0), 2.0, 0.95,
+                                facecolor=R[i], edgecolor="black", lw=0.8,
+                                zorder=5))
+        axN.text(gx, gy + 0.52, f"{RL[i]}.obs", ha="center", va="center",
+                 fontsize=7, family="monospace", zorder=7)
+        axN.text(gx, gy - 0.52, f"{RL[i]}.act", ha="center", va="center",
+                 fontsize=7, family="monospace", color="white", zorder=7)
+        obs_c = (gx, gy + 0.52); act_c = (gx, gy - 0.52)
+        # obs -> act (the policy), within the robot
+        axN.add_patch(FancyArrowPatch(obs_c, act_c, arrowstyle="-|>",
+                                      mutation_scale=11, color=R[i], lw=1.8,
+                                      connectionstyle="arc3,rad=0.55", zorder=8))
+        # act -> dispatch (report), dispatch -> obs (coordinate)
+        axN.add_patch(FancyArrowPatch(act_c, disp, arrowstyle="-|>",
+                                      mutation_scale=9, color="#9a9a9a", lw=1.1,
+                                      connectionstyle="arc3,rad=0.1", zorder=3))
+        axN.add_patch(FancyArrowPatch(disp, obs_c, arrowstyle="-|>",
+                                      mutation_scale=9, color="#8e7cc3", lw=1.1,
+                                      connectionstyle="arc3,rad=0.1", zorder=3))
+    axN.annotate("obs$\\rightarrow$act\n(same as the\nvision$\\rightarrow$motion\n"
+                 "on the left)", xy=(1.9, 0.9), xytext=(4.0, 0.9),
+                 fontsize=7.4, va="center", color=R[0],
+                 arrowprops=dict(arrowstyle="-|>", lw=0.9, color=R[0]))
+
+    # correspondence bridge between the panels
+    fig.text(0.5, 0.60, "$\\equiv$", ha="center", va="center", fontsize=22,
+             color="#555555")
+    fig.text(0.5, 0.55, "same\ncausal\nstructure", ha="center", va="center",
+             fontsize=7.5, color="#555555")
+
+    # ---------- CODE ----------
+    axC.axis("off"); axC.set_xlim(0, 1); axC.set_ylim(0, 1)
+    axC.add_patch(Rectangle((0, 0), 1, 1, facecolor="#f7f7f7",
+                            edgecolor="#cccccc", lw=0.8))
+    left = [
+        ("# declare the geometry", "#7a7a7a"),
+        ("layout = CanvasLayout(T=4, H=16, W=16, d_model=256,", "#222"),
+        ('    regions={', "#222"),
+        ('        "r0.obs": (0,4, 0,6, 0,6),  "r0.act": (0,4, 6,8, 0,4),',
+         "#1a5fa8"),
+        ('        "r1.obs": (0,4, 0,6, 10,16), "r1.act": (0,4, 6,8, 12,16),',
+         "#2e7d32"),
+        ('        # ... r2, r3 ...', "#7a7a7a"),
+        ('        "dispatch": (0,4, 7,9, 7,9),', "#6a4fa0"),
+        ('    })', "#222"),
+    ]
+    right = [
+        ("# declare who may influence whom", "#7a7a7a"),
+        ("topology = CanvasTopology(connections=[", "#222"),
+        ('  # each robot\'s policy: observation conditions action', "#7a7a7a"),
+        ('  Connection(src="r0.act", dst="r0.obs"),   # (r1..r3 alike)', "#1a5fa8"),
+        ('  # report up to the shared task, coordinate back down', "#7a7a7a"),
+        ('  Connection(src="r0.act",  dst="dispatch"),', "#444"),
+        ('  Connection(src="r0.obs",  dst="dispatch"),', "#6a4fa0"),
+        ('])', "#222"),
+    ]
+    for col, lines, x0 in ((0, left, 0.02), (1, right, 0.52)):
+        for i, (txt, c) in enumerate(lines):
+            axC.text(x0, 0.90 - i * 0.115, txt, fontsize=8.0,
+                     family="monospace", va="top", color=c)
+    axC.axvline(0.505, color="#dddddd", lw=0.8)
+
+    fig.suptitle("you declare the causal structure once; it lives in the world "
+                 "and in the canvas the same way", fontsize=12.5, y=0.985)
+    fig.savefig(os.path.join(OUT, "real_vs_neural.png"),
+                bbox_inches="tight", facecolor="white", dpi=190)
+    plt.close(fig)
+    print("wrote real_vs_neural.png")
+
+
 def copies():
     fig = os.path.join(HERE, "figures")
     ass = os.path.join(HERE, "..", "assets")
     exa = os.path.join(ass, "examples")
     for src, dst in [
         (os.path.join(fig, "fig_layout_example.png"), "fig_layout_example.png"),
-        (os.path.join(fig, "fig_topology.png"), "fig_topology.png"),
         (os.path.join(fig, "fig_type_system.png"), "fig_type_system.png"),
         (os.path.join(fig, "fig_icu_allocation.png"), "fig_icu_allocation.png"),
         # transfer_distance parked (needs the representation-stability caveat);
@@ -679,5 +833,6 @@ if __name__ == "__main__":
     stagger_diffusion_policy()
     stagger_multi_agent()
     stagger_icu_all()
+    real_vs_neural()
     copies()
     print("\nassets in", OUT)

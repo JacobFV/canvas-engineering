@@ -406,9 +406,9 @@ def fig_icu_allocation():
     from matplotlib.patches import ConnectionPatch
     extents = {}
     extents["patient"] = entity_outline("patients[2]", "#1a3f6f",
-                                        '"this is patients[2]"', (W + 0.7, 6.0))
+                                        "this is patients[2]", (W + 0.7, 6.0))
     extents["nurse"] = entity_outline("nurses[1]", "#1e5c1e",
-                                      '"this is nurses[1]"', (W + 0.7, h_max - 2.0))
+                                      "this is nurses[1]", (W + 0.7, h_max - 2.0))
     # dashed connectors: instance line in the schema -> its blocks on canvas
     for ent, line_i in anchors.items():
         hs, ws = extents[ent]
