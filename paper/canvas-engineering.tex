@@ -9,7 +9,6 @@
 \let\Bbbk\relax          % avoid clash between newpxmath and amssymb
 \usepackage{amssymb}
 \usepackage{microtype}
-\usepackage{tikz}
 
 % ---- Layout ----
 \usepackage[letterpaper,margin=0.75in,columnsep=0.3in]{geometry}
@@ -53,22 +52,16 @@
 }
 
 \newcommand{\code}[1]{\texttt{\small #1}}
-% Looped-square command glyph (⌘), drawn as four corner loops linked by a square
-\newcommand{\cmdglyph}{\raisebox{0.05em}{\begin{tikzpicture}[scale=0.115,line width=0.9pt,line cap=round,line join=round,baseline=0pt]
-  \draw (-1,-1) -- (1,-1) -- (1,1) -- (-1,1) -- cycle;
-  \draw (-1,-1) circle(0.55);
-  \draw (1,-1) circle(0.55);
-  \draw (1,1) circle(0.55);
-  \draw (-1,1) circle(0.55);
-\end{tikzpicture}}}
+% CommandAGI looped-square mark (the official ⌘ logo path)
+\newcommand{\cmdglyph}{\raisebox{-0.13em}{\includegraphics[height=0.92em]{figures/commandagi-mark.pdf}}}
 
 % ---- Title ----
 \title{\vspace{-3.5em}\bfseries Canvas Engineering: Declared Causal Macrostructure\\ for Reverse-Diffusion Latent Dynamics}
-\author{
+\author{\normalsize
   Jacob Valdez\thanks{\href{mailto:jacob@commandagi.com}{\texttt{jacob@commandagi.com}}} \quad \cmdglyph\ CommandAGI\\[0.35em]
-  \small\href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}
+  \href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}
 }
-\date{July 2026}
+\date{\normalsize July 2026}
 
 \begin{document}
 \maketitle
