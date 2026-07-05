@@ -9,6 +9,7 @@
 \let\Bbbk\relax          % avoid clash between newpxmath and amssymb
 \usepackage{amssymb}
 \usepackage{microtype}
+\usepackage{tikz}
 
 % ---- Layout ----
 \usepackage[letterpaper,margin=0.75in,columnsep=0.3in]{geometry}
@@ -52,31 +53,31 @@
 }
 
 \newcommand{\code}[1]{\texttt{\small #1}}
-\newcommand{\ghmark}{\raisebox{-0.15em}{\includegraphics[height=0.95em]{figures/github-mark.png}}}
+% Looped-square command glyph (⌘), drawn as four corner loops linked by a square
+\newcommand{\cmdglyph}{\raisebox{0.05em}{\begin{tikzpicture}[scale=0.115,line width=0.9pt,line cap=round,line join=round,baseline=0pt]
+  \draw (-1,-1) -- (1,-1) -- (1,1) -- (-1,1) -- cycle;
+  \draw (-1,-1) circle(0.55);
+  \draw (1,-1) circle(0.55);
+  \draw (1,1) circle(0.55);
+  \draw (-1,1) circle(0.55);
+\end{tikzpicture}}}
 
 % ---- Title ----
 \title{\vspace{-3.5em}\bfseries Canvas Engineering: Declared Causal Macrostructure\\ for Reverse-Diffusion Latent Dynamics}
 \author{
-  Jacob Valdez \quad \small\href{mailto:jacob@commandagi.com}{\texttt{jacob@commandagi.com}}\\[0.15em]
-  \small\href{https://commandagi.com}{CommandAGI}
+  Jacob Valdez\thanks{\href{mailto:jacob@commandagi.com}{\texttt{jacob@commandagi.com}}} \quad \cmdglyph\ CommandAGI\\[0.35em]
+  \small\href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}
 }
 \date{July 2026}
 
 \begin{document}
 \maketitle
 
-\vspace{-1.2em}
-\begin{center}
-  \small
-  \href{https://github.com/commandAGI/canvas-engineering}{\ghmark\,\texttt{CommandAGI/canvas-engineering}}
-  \,$\cdot$\,
-  \href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}
-\end{center}
 \vspace{0.4em}
 
 \noindent\textbf{Abstract}\par\vspace{0.4em}
 \noindent\small
-Prompt engineering structures what a language model \emph{sees}; canvas engineering structures what a diffusion model \emph{thinks in}. The practitioner declares the macrostructure of a diffusion transformer's latent space---which regions carry which modalities, their geometry, temporal update frequencies, loss participation, and, critically, a directed graph of \emph{permitted} block-to-block attention operations---and a compiler lowers that declaration into attention masks, loss weights, and frame mappings. Because reverse diffusion is an iterated denoising map over the whole canvas, a hard connectivity constraint on attention induces an explicit, human-legible causal interaction graph \emph{inside} the generative dynamics, while gradient descent remains free to shape all fine structure within and along the declared edges. This is a neurosymbolic architecture in a precise sense: transparent symbolic macrostructure---a type system, with offsets, signatures, calling conventions, and an ABI---hosted directly within learnable neural mechanics, with no discrete/continuous interface to cross. We give the underlying mathematics---region index sets, the mask construction, the weighted denoising objective, and the reachability semantics that make an absent edge an exact (marginal) independence---and describe the abstraction stack (regions $\rightarrow$ topology $\rightarrow$ typed programs $\rightarrow$ compiled deployment), including the compilation of nested entity schemas into hierarchically coarse-grained canvases. Worked designs span robot manipulation, a compiler-allocated hospital ICU ward with 199 regions, air-traffic control, and a 23-region cortical model that recovers brain-encoder--estimated cortical dynamics at $R^2=0.825$. Early experiments---26 studies, 236 training runs on CogVideoX-2B---include a $1.73\times$ parameter-efficiency result for looped attention ($p<0.001$) and a frozen 350K-parameter configuration that beats 11.7M unfrozen parameters on action prediction. We are explicit that these are small-scale results and read them as calibration rather than narrative. We argue that \emph{declared} latent structure is the production-ready on-ramp to intuition-guided symbolic world modeling: the symbolic model is not synthesized by the network, it is authored by the engineer, and the network learns everything else.\par\normalsize\vspace{0.8em}
+Prompt engineering structures what a language model \emph{sees}; canvas engineering structures what a diffusion model \emph{thinks in}. The practitioner declares the macrostructure of a diffusion transformer's latent space---which regions carry which modalities, their geometry, temporal update frequencies, loss participation, and, critically, a directed graph of \emph{permitted} block-to-block attention operations---and a compiler lowers that declaration into attention masks, loss weights, and frame mappings. Because reverse diffusion is an iterated denoising map over the whole canvas, a hard connectivity constraint on attention induces an explicit, human-legible causal interaction graph \emph{inside} the generative dynamics, while gradient descent remains free to shape all fine structure within and along the declared edges. This is a neurosymbolic architecture in a precise sense: transparent symbolic macrostructure---a type system, with offsets, signatures, calling conventions, and an ABI---hosted directly within learnable neural mechanics, with no discrete/continuous interface to cross. We give the underlying mathematics---region index sets, the mask construction, the weighted denoising objective, and the reachability semantics that make an absent edge an exact (marginal) independence---and describe the abstraction stack (regions $\rightarrow$ topology $\rightarrow$ typed programs $\rightarrow$ compiled deployment), including the compilation of nested entity schemas into hierarchically coarse-grained canvases. Worked designs span robot manipulation, a compiler-allocated hospital ICU ward with 199 regions, air-traffic control, and a 23-region cortical model that recovers brain-encoder--estimated cortical dynamics at $R^2=0.825$. Early experiments---26 studies, 236 training runs on CogVideoX-2B---include a $1.73\times$ parameter-efficiency result for looped attention ($p<0.001$) and a frozen 350K-parameter configuration that beats 11.7M unfrozen parameters on action prediction. We are explicit that these are small-scale results and read them as calibration rather than narrative. We argue that \emph{declared} latent structure is the production-ready on-ramp to intuition-guided symbolic world modeling: the symbolic model is not synthesized by the network, it is authored by the engineer, and the network learns everything else. Research and code as \href{https://github.com/commandAGI/canvas-engineering}{\texttt{https://github.com/CommandAGI/canvas-engineering}}.\par\normalsize\vspace{0.8em}
 
 \section{Position: two routes to symbolic world models}
 
