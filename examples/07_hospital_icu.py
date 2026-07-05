@@ -102,24 +102,28 @@ ASSIGNMENTS = [
 
 @dataclass
 class CardiovascularSystem:
+    __coarse__ = Field(1, 2)  # summary the patient sees
     heart_rate: Field = Field(1, 2, period=1)
     blood_pressure: Field = Field(1, 4, period=2)
     cardiac_output: Field = Field(1, 2, period=5)
 
 @dataclass
 class RespiratorySystem:
+    __coarse__ = Field(1, 2)
     spo2: Field = Field(1, 2, period=1)
     respiratory_rate: Field = Field(1, 2, period=1)
     ventilator_settings: Field = Field(1, 4, period=2, is_output=False)
 
 @dataclass
 class RenalSystem:
+    __coarse__ = Field(1, 2)
     urine_output: Field = Field(1, 2, period=12)
     creatinine: Field = Field(1, 1, period=24)
     electrolytes: Field = Field(1, 4, period=24)
 
 @dataclass
 class NeurologicalSystem:
+    __coarse__ = Field(1, 2)
     consciousness: Field = Field(1, 4, period=6)
     sedation_level: Field = Field(1, 2, period=4)
     pain: Field = Field(1, 2, period=2)
@@ -127,12 +131,14 @@ class NeurologicalSystem:
 
 @dataclass
 class PsychologicalState:
+    __coarse__ = Field(1, 2)
     anxiety: Field = Field(1, 2, period=4)
     sleep_quality: Field = Field(1, 2, period=24)
     will_to_recover: Field = Field(1, 2, period=24, loss_weight=2.0)
 
 @dataclass
 class Patient:
+    __coarse__ = Field(2, 4)  # a patient's 8-position summary, seen by the ward/nurses
     cardiovascular: CardiovascularSystem = dc_field(default_factory=CardiovascularSystem)
     respiratory: RespiratorySystem = dc_field(default_factory=RespiratorySystem)
     renal: RenalSystem = dc_field(default_factory=RenalSystem)
@@ -143,6 +149,7 @@ class Patient:
 
 @dataclass
 class Nurse:
+    __coarse__ = Field(1, 3)
     workload: Field = Field(1, 2)
     fatigue: Field = Field(1, 2, loss_weight=2.0)
     stress: Field = Field(1, 2, loss_weight=2.0)
@@ -151,6 +158,7 @@ class Nurse:
 
 @dataclass
 class BureaucraticState:
+    __coarse__ = Field(1, 3)
     insurance_auth: Field = Field(1, 2, is_output=False, period=24)
     bed_pressure: Field = Field(1, 2, period=12)
     staffing_ratio: Field = Field(1, 2, period=8)
@@ -158,6 +166,7 @@ class BureaucraticState:
 
 @dataclass
 class FamilyUnit:
+    __coarse__ = Field(1, 2)
     presence: Field = Field(1, 2, is_output=False, period=24)
     emotional_state: Field = Field(1, 2)
     communication_quality: Field = Field(1, 2, loss_weight=1.5)

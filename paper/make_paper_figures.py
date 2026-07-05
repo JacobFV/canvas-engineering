@@ -279,7 +279,7 @@ def fig_icu_allocation():
     # recompile on the tightest grid that packs (32x32 in the example is
     # roomy; 26x26 fits with 68% utilization)
     bound = ns["compile_schema"](
-        ns["ward"], T=1, H=26, W=26, d_model=32,
+        ns["ward"], T=1, H=28, W=28, d_model=32,
         connectivity=ns["ConnectivityPolicy"](
             intra="dense", array_element="ring", temporal="dense"),
     )
@@ -331,7 +331,7 @@ def fig_icu_allocation():
         ("    nurses=[Nurse() for _ in range(4)],", "hl2", "nurse"),
         ("    families=[FamilyUnit() for _ in range(6)],", "plain", None),
         (")", "plain", None),
-        ("bound = compile_schema(ward, H=26, W=26)", "kw", None),
+        ("bound = compile_schema(ward, H=28, W=28)", "kw", None),
     ]
     n = len(CODE)
     axC.set_xlim(0, 1); axC.set_ylim(n + 0.5, -1.0)
