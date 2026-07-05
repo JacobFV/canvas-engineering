@@ -21,6 +21,7 @@
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage{listings}
 \usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor={blue!55!black}]{hyperref}
+\usepackage{xurl}   % allow long URLs to break anywhere
 \usepackage{enumitem}
 
 \captionsetup{font=small,labelfont=bf,skip=4pt}
@@ -51,21 +52,27 @@
 }
 
 \newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\ghmark}{\raisebox{-0.15em}{\includegraphics[height=0.95em]{figures/github-mark.png}}}
 
 % ---- Title ----
 \title{\vspace{-3.5em}\bfseries Canvas Engineering: Declared Causal Macrostructure\\ for Reverse-Diffusion Latent Dynamics}
 \author{
-  Jacob Valdez\\
-  \small\href{https://commandagi.com}{CommandAGI}\\
-  \small\href{mailto:jacob@commandagi.com}{\texttt{jacob@commandagi.com}}\\
-  \small\href{https://github.com/commandAGI/canvas-engineering}{\texttt{github.com/commandAGI/canvas-engineering}}
-  \,$\cdot$\,
-  \href{https://commandagi.github.io/canvas-engineering/}{\texttt{commandagi.github.io/canvas-engineering}}
+  Jacob Valdez \quad \small\href{mailto:jacob@commandagi.com}{\texttt{jacob@commandagi.com}}\\[0.15em]
+  \small\href{https://commandagi.com}{CommandAGI}
 }
 \date{July 2026}
 
 \begin{document}
 \maketitle
+
+\vspace{-1.2em}
+\begin{center}
+  \small
+  \href{https://github.com/commandAGI/canvas-engineering}{\ghmark\,\texttt{CommandAGI/canvas-engineering}}
+  \,$\cdot$\,
+  \href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}
+\end{center}
+\vspace{0.4em}
 
 \noindent\textbf{Abstract}\par\vspace{0.4em}
 \noindent\small
@@ -325,7 +332,7 @@ Diffusion policy \cite{chi2023diffusion} establishes observation-conditioned act
 The neurosymbolic program stalls in production because it usually demands a new runtime at the neural/symbolic boundary. Canvas engineering dissolves the boundary instead: the symbolic artifact is a schema---a type system for latent computation---and its execution is masked attention inside a stock diffusion transformer. You declare the causal macrostructure of thought; SGD fills in the rest. The empirical record is early and we present it at face value: $1.73\times$ parameter efficiency, a 350K-parameter configuration that beats 11.7M, and calibration results that tell us where structure must be declared rather than hoped for. The decisive experiments---declared topology versus flat co-residence, representation stability across seeds and backbones, behavior at scale---are specified and awaiting compute, and we would rather run them than speculate ahead of them. What stands regardless is the abstraction. Once latent structure is \emph{declarable}, it is versionable, diffable, compilable, and shareable---and structure you can ship is the only structure that will ever out-compete paying for more data.
 
 \vspace{0.4em}
-\noindent\small\textbf{Artifacts.} \href{https://pypi.org/project/canvas-engineering/}{\code{pip install canvas-engineering}} (Apache 2.0), published under \href{https://commandagi.com}{CommandAGI}. Code: \href{https://github.com/commandAGI/canvas-engineering}{\texttt{github.com/commandAGI/canvas-engineering}}; documentation, runnable examples, and design notes: \href{https://commandagi.github.io/canvas-engineering/}{\texttt{commandagi.github.io/canvas-engineering}}. Full experiment archive and the companion empirical paper (``Looped Attention in Video Diffusion Transformers: 26 Experiments on What Works, What Doesn't, and Why,'' Valdez \& Claude Opus 4.6) at \href{https://github.com/JacobFV/recursive-omnimodal-video-action-model}{\texttt{github.com/JacobFV/recursive-omnimodal-video-action-model}}.
+\noindent\small\textbf{Artifacts.} \href{https://pypi.org/project/canvas-engineering/}{\code{pip install canvas-engineering}} (Apache 2.0), published under \href{https://commandagi.com}{CommandAGI}. Code: \href{https://github.com/commandAGI/canvas-engineering}{\texttt{github.com/commandAGI/canvas-engineering}}; documentation, runnable examples, and design notes: \href{https://commandagi.com/research/canvas-engineering}{\texttt{commandagi.com/research/canvas-engineering}}. Full experiment archive and the companion empirical paper (``Looped Attention in Video Diffusion Transformers: 26 Experiments on What Works, What Doesn't, and Why'') at \href{https://github.com/JacobFV/recursive-omnimodal-video-action-model}{\texttt{github.com/JacobFV/recursive-omnimodal-video-action-model}}.
 
 {\small
 \bibliographystyle{unsrtnat}
